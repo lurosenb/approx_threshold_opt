@@ -422,5 +422,7 @@ class ApproxThreshold(BaseEstimator, ClassifierMixin):
             go.Bar(name='Adjusted', x=metrics, y=adjusted_values)
         ])
 
-        fig.update_layout(barmode='group', title='Performance Comparison: Original vs. Adjusted Thresholds')
+        fig.update_layout(barmode='group', title='Performance Comparison: Original vs. Adjusted Thresholds',
+                        yaxis=dict(title='Score', range=[0, 1.05]),
+                        xaxis=dict(title='Metrics'))
         fig.show()
