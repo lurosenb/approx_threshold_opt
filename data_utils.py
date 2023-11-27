@@ -86,7 +86,6 @@ def get_public(state="NY"):
     acs = ACSData(states=[state])
     return acs.acs_data
 
-
 def calculate_dimensionality(df):
     dimensionality = 1
     for col in df.columns:

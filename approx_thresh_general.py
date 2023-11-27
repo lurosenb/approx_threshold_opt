@@ -230,8 +230,6 @@ class ApproxThresholdGeneral(BaseEstimator, ClassifierMixin):
         else:
             raise ValueError("The number of metrics must be 2 or 3.")
 
-
-
     def plot_performance_comparison(self, X_test, y_test, A_test):
         """
         Plot performance metrics comparison between original and adjusted thresholds.
@@ -264,6 +262,39 @@ class ApproxThresholdGeneral(BaseEstimator, ClassifierMixin):
         ])
 
         fig.update_layout(barmode='group', title='Performance Comparison: Original vs. Adjusted Thresholds',
+                        yaxis=dict(title='Score', range=[0, 1.05]),
+                        xaxis=dict(title='Metrics'))
+        fig.show()
+
+    def plot_performance_comparison_groups(self, X_test, y_test, A_test):
+        y_prob = self.base_model.predict_proba(X_test)[:, 1]
+        original_predictions = np.where(y_prob > 0.5, 1, 0)
+
+        unique_groups = np.unique(A_test)
+        metrics = ['Accuracy', 'F1 Score', 'Precision', 'Recall']
+        
+        fig = go.Figure()
+
+        for group in unique_groups:
+            group_mask = A_test == group
+
+            original_accuracy = accuracy_score(y_test[group_mask], original_predictions[group_mask])
+            original_f1 = f1_score(y_test[group_mask], original_predictions[group_mask])
+            original_precision = precision_score(y_test[group_mask], original_predictions[group_mask])
+            original_recall = recall_score(y_test[group_mask], original_predictions[group_mask])
+            original_values = [original_accuracy, original_f1, original_precision, original_recall]
+
+            adjusted_labels = self.predict(X_test[group_mask], A_test[group_mask])
+            adjusted_accuracy = accuracy_score(y_test[group_mask], adjusted_labels)
+            adjusted_f1 = f1_score(y_test[group_mask], adjusted_labels)
+            adjusted_precision = precision_score(y_test[group_mask], adjusted_labels)
+            adjusted_recall = recall_score(y_test[group_mask], adjusted_labels)
+            adjusted_values = [adjusted_accuracy, adjusted_f1, adjusted_precision, adjusted_recall]
+
+            fig.add_trace(go.Bar(name=f'Original Group {group}', x=metrics, y=original_values, marker_color='blue'))
+            fig.add_trace(go.Bar(name=f'Adjusted Group {group}', x=metrics, y=adjusted_values, marker_color='red'))
+
+        fig.update_layout(barmode='group', title='Performance Comparison: Original vs. Adjusted Thresholds by Group',
                         yaxis=dict(title='Score', range=[0, 1.05]),
                         xaxis=dict(title='Metrics'))
         fig.show()
