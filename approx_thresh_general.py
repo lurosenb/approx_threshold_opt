@@ -84,16 +84,24 @@ class ApproxThresholdGeneral(BaseEstimator, ClassifierMixin):
             combined_true = []
             objective = 0
             temp_group_metrics = {}
+            total_size = 0
+            weighted_acc = 0
 
             for i, group in enumerate(unique_groups):
                 mask_group = A == group
                 temp_group_metrics[group] = self._compute_metrics(y_true[mask_group], y_prob[mask_group], threshold_combination[i])
-                
                 self.group_metrics[group][idx] = temp_group_metrics[group]
                 
                 adjusted_labels = y_prob[mask_group] > threshold_combination[i]
                 combined_preds.extend(adjusted_labels)
                 combined_true.extend(y_true[mask_group])
+                
+                group_acc = accuracy_score(y_true[mask_group], adjusted_labels)
+                group_size = len(y_true[mask_group])
+                weighted_acc += group_acc * group_size
+                total_size += group_size
+
+            weighted_acc /= total_size
 
             for i, group in enumerate(unique_groups):
                 for other_group in unique_groups:
@@ -107,8 +115,7 @@ class ApproxThresholdGeneral(BaseEstimator, ClassifierMixin):
                             else:
                                 raise ValueError(f"Metric {metric_name} not found in group {group} or {other_group}.")
             
-            acc = accuracy_score(combined_true, combined_preds)
-            objective += lambda_ * (1 - acc)
+            objective += lambda_ * (1 - weighted_acc)
 
             if resource_constraint is not None and sum(combined_preds) > resource_constraint:
                 continue

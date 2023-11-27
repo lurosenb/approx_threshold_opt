@@ -170,14 +170,22 @@ class ApproxThresholdPytorch(BaseEstimator, ClassifierMixin):
         unique_groups_indices = {group: idx for idx, group in enumerate(unique_groups)}
 
         metrics_per_group = {metric_name: [] for metric_name in metrics_functions}
+        total_size = y_true.shape[0]
+        weighted_global_metric = 0.0
+
         for group in unique_groups:
             group_idx = unique_groups_indices[group]
             y_prob_group = y_prob[A == group]
             y_true_group = y_true[A == group]
+            group_size = y_true_group.shape[0]
 
             for metric_name, metric_func in metrics_functions.items():
                 metric_value = metric_func(y_true_group, y_prob_group, thresholds[group_idx])
                 metrics_per_group[metric_name].append(metric_value)
+
+            # compute group-specific global metric and add to the weighted sum
+            group_global_metric = self.global_metric_func(y_true_group, y_prob_group, thresholds[group_idx])
+            weighted_global_metric += group_global_metric * (group_size / total_size)
 
         # compute differences between group metrics and sum their squares
         for metric_name in metrics_functions:
@@ -185,9 +193,7 @@ class ApproxThresholdPytorch(BaseEstimator, ClassifierMixin):
             differences = metric_values.unsqueeze(1) - metric_values.unsqueeze(0)
             objective += torch.sum(differences ** 2)
 
-        # then, compute global objective and incorporate
-        global_metric_value = self.global_metric_func(y_true, y_prob, thresholds.mean())
-        objective += lambda_ * (1 - global_metric_value)
+        objective += lambda_ * (1 - weighted_global_metric)
 
         return objective
     

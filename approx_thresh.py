@@ -279,12 +279,19 @@ class ApproxThreshold(BaseEstimator, ClassifierMixin):
                 adjusted_labels2 = y_prob[mask_class2] > thresholds2[j]
                 combined_preds = np.concatenate([adjusted_labels1, adjusted_labels2])
                 combined_true = np.concatenate([y_true[mask_class1], y_true[mask_class2]])
-                acc = accuracy_score(combined_true, combined_preds)
+                
+                group1_size = len(adjusted_labels1)
+                group2_size = len(adjusted_labels2)
+                total_size = group1_size + group2_size
+                acc_group1 = accuracy_score(combined_true[:group1_size], combined_preds[:group1_size])
+                acc_group2 = accuracy_score(combined_true[group1_size:], combined_preds[group1_size:])
+                acc = (acc_group1 * group1_size + acc_group2 * group2_size) / total_size
+
                 objective = distances[i, j] + lambda_ * (1 - acc)
                 if objective < best_objective_value:
                     best_objective_value = objective
                     best_indices = (i, j)
-                    
+                        
         i, j = best_indices
         epsilon_fpr = np.abs(fpr1[i] - fpr2[j])
         epsilon_tpr = np.abs(tpr1[i] - tpr2[j])
