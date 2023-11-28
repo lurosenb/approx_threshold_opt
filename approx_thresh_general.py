@@ -111,7 +111,7 @@ class ApproxThresholdGeneral(BaseEstimator, ClassifierMixin):
                                 distances = cdist(temp_group_metrics[group][metric_name].reshape(-1, 1),
                                                 temp_group_metrics[other_group][metric_name].reshape(-1, 1), 
                                                 metric='euclidean')
-                                objective += np.min(distances)
+                                objective += np.sum(distances)
                             else:
                                 raise ValueError(f"Metric {metric_name} not found in group {group} or {other_group}.")
             
