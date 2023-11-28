@@ -104,16 +104,16 @@ class ApproxThresholdGeneral(BaseEstimator, ClassifierMixin):
             weighted_acc /= total_size
 
             for i, group in enumerate(unique_groups):
+                # here, we need to make a full vector of metrics
+                group_metric_vector = np.array([temp_group_metrics[group][metric_name] for metric_name in metrics_functions.keys()])
+
                 for other_group in unique_groups:
                     if group != other_group:
-                        for metric_name in metrics_functions.keys():
-                            if metric_name in temp_group_metrics[group] and metric_name in temp_group_metrics[other_group]:
-                                distances = cdist(temp_group_metrics[group][metric_name].reshape(-1, 1),
-                                                temp_group_metrics[other_group][metric_name].reshape(-1, 1), 
-                                                metric='euclidean')
-                                objective += np.sum(distances)
-                            else:
-                                raise ValueError(f"Metric {metric_name} not found in group {group} or {other_group}.")
+                        other_group_metric_vector = np.array([temp_group_metrics[other_group][metric_name] for metric_name in metrics_functions.keys()])
+
+                        # and then do euclidean distance between that metric and the other group's metric vector
+                        distances = cdist(group_metric_vector.reshape(1, -1), other_group_metric_vector.reshape(1, -1), metric='euclidean')
+                        objective += np.sum(distances)
             
             objective += lambda_ * (1 - weighted_acc)
 
@@ -126,6 +126,7 @@ class ApproxThresholdGeneral(BaseEstimator, ClassifierMixin):
                 self.best_index = idx
 
         return best_thresholds
+
 
     def plot_matplotlib(self, metric_keys=None):
         """
