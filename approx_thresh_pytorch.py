@@ -163,13 +163,13 @@ class ApproxThresholdPytorch(BaseEstimator, ClassifierMixin):
 
         optimized_thresholds = best_overall_thresholds.detach().numpy() if best_overall_thresholds is not None else thresholds.detach().numpy()
         return dict(zip(unique_groups, optimized_thresholds))
-
-    def _compute_objective_gd(self, y_true, y_prob, A, unique_groups, thresholds, metrics_functions, lambda_, resource_constraint):
+    
+    def _compute_objective_gd(self, y_true, y_prob, A, unique_groups, thresholds, metrics_functions, lambda_, resource_constraint, distance_type="euclidean"):
         objective = 0.0
 
         unique_groups_indices = {group: idx for idx, group in enumerate(unique_groups)}
 
-        metrics_per_group = {metric_name: [] for metric_name in metrics_functions}
+        metrics_per_group = {group: [] for group in unique_groups}
         total_size = y_true.shape[0]
         weighted_global_metric = 0.0
 
@@ -179,22 +179,29 @@ class ApproxThresholdPytorch(BaseEstimator, ClassifierMixin):
             y_true_group = y_true[A == group]
             group_size = y_true_group.shape[0]
 
+            group_metrics = []
             for metric_name, metric_func in metrics_functions.items():
                 metric_value = metric_func(y_true_group, y_prob_group, thresholds[group_idx])
-                metrics_per_group[metric_name].append(metric_value)
+                group_metrics.append(metric_value)
 
-            # compute group-specific global metric and add to the weighted sum
+            metrics_per_group[group] = torch.stack(group_metrics)
+
             group_global_metric = self.global_metric_func(y_true_group, y_prob_group, thresholds[group_idx])
             weighted_global_metric += group_global_metric * (group_size / total_size)
 
-        # compute differences between group metrics and sum their squares
-        for metric_name in metrics_functions:
-            metric_values = torch.stack(metrics_per_group[metric_name])
-            differences = metric_values.unsqueeze(1) - metric_values.unsqueeze(0)
-            objective += torch.sum(differences ** 2)
+        for i, group in enumerate(unique_groups):
+            for j, other_group in enumerate(unique_groups):
+                if i != j:
+                    differences = metrics_per_group[group] - metrics_per_group[other_group]
+                    if distance_type == "euclidean":
+                        distance = torch.sqrt(torch.sum(differences ** 2))
+                    elif distance_type == "squared":
+                        distance = torch.sum(differences ** 2)
+                    else:
+                        raise ValueError("Invalid distance type. Choose 'euclidean' or 'squared'")
+                    objective += distance
 
         objective += lambda_ * (1 - weighted_global_metric)
-
         return objective
     
     def _store_metrics_for_epoch(self, y_true, y_prob, A, unique_groups, thresholds, metrics_functions):
