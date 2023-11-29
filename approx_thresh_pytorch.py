@@ -69,8 +69,8 @@ class ApproxThresholdPytorch(BaseEstimator, ClassifierMixin):
                  lambda_=0.5, 
                  global_metric_func=accuracy_torch, 
                  alpha=0.01, 
-                 lr=0.05, 
-                 num_iters=10000, 
+                 lr=0.01, 
+                 num_iters=1000, 
                  patience=20, 
                  min_delta=0.001,
                  gamma=0.1):
