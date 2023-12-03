@@ -162,6 +162,7 @@ class ApproxThresholdPytorch(BaseEstimator, ClassifierMixin):
                 best_overall_thresholds = best_thresholds
 
         optimized_thresholds = best_overall_thresholds.detach().numpy() if best_overall_thresholds is not None else thresholds.detach().numpy()
+        print(f"Best overall loss: {best_overall_loss}")
         return dict(zip(unique_groups, optimized_thresholds))
     
     def _compute_objective_gd(self, y_true, y_prob, A, unique_groups, thresholds, metrics_functions, lambda_, resource_constraint, distance_type="euclidean"):

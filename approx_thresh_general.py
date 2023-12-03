@@ -8,7 +8,8 @@ from mpl_toolkits.mplot3d import Axes3D
 
 import plotly.graph_objects as go
 
-import numpy as np
+from itertools import product
+from math import ceil
 
 def tpr(y_true, y_prob, threshold=0.5):
     y_pred = (y_prob >= threshold).astype(int)
@@ -35,14 +36,13 @@ class ApproxThresholdGeneral(BaseEstimator, ClassifierMixin):
         self.lambda_ = lambda_
         self.thresholds_ = None
 
-    def fit(self, X, y, A):
+    def fit(self, X, y, A, efficient=True):
         self.base_model.fit(X, y)
         y_prob = self.base_model.predict_proba(X)[:, 1]
         
         self.group_metrics = {}
         self.group_thresholds = {}
         unique_groups = np.unique(A)
-
         self.thresholds_ = self._find_intersection(y, y_prob, A, unique_groups, self.metric_functions, lambda_=self.lambda_)
 
         return self
@@ -124,6 +124,8 @@ class ApproxThresholdGeneral(BaseEstimator, ClassifierMixin):
                 best_objective_value = objective
                 best_thresholds = dict(zip(unique_groups, threshold_combination))
                 self.best_index = idx
+
+        print(f'Best objective value: {best_objective_value}')
 
         return best_thresholds
 
@@ -308,6 +310,88 @@ class ApproxThresholdGeneral(BaseEstimator, ClassifierMixin):
         fig.show()
 
 
+class ApproxThresholdNet(ApproxThresholdGeneral):
+    """
+    Here, we use an epsilon net to find the best threshold combination. 
+    This is a more efficient method than the previous one, 
+    and is guaranteed to find a solution within some error margin to the optimal,
+    assuming the metric functions are Lipschitz continuous with constant less than or
+    equal to 1. Then, an overall Lipschitz constant of the objective function is 
+    less than or equal to 2 * sqrt(2) * |G| * |M| + lambda, where |G| is the number 
+    of groups and |M| is the number of metric functions.
+    See derivation in the paper.
 
+    This provides a more efficient method for finding the best threshold combination,
+    because the number of points in the epsilon net is only dependent on the error margin
+    and a Lipschitz constant of the objective function, which is much smaller than the
+    number of points in the data.
 
+    However, the metric functions are also assumed to be 1-Lipschitz continuous, which
+    is not always the case. The "soft" or smoothed versions of the metric functions
+    are (likely) 1-Lipschitz continuous, but the original metric functions are not.
+    So, though principled, this method is still heuristic.
+    """
+    def __init__(self, base_model, metric_functions, lambda_=0.5, max_error=0.01, L_f=None):
+        super().__init__(base_model, metric_functions, lambda_=lambda_)
+        self.max_error = max_error
+        self.L_f = L_f
 
+    def _find_intersection(self, y_true, y_prob, A, unique_groups, metrics_functions, lambda_=0.5):
+        if self.L_f is None:
+            self.L_f = 2 * np.sqrt(2) * len(unique_groups) * len(metrics_functions) + lambda_
+        
+        range_f = len(unique_groups) * len(metrics_functions) 
+
+        epsilon = self.max_error * range_f / self.L_f
+
+        N = ceil(1 / epsilon) + 1
+
+        print(f'Number of points in the epsilon net: {N}')
+        print(f'Number of points in data: {len(y_true)}')
+
+        threshold_points = np.linspace(0, 1, N)
+
+        best_objective_value = float('inf')
+        best_thresholds = {}
+
+        for threshold_combination in product(threshold_points, repeat=len(unique_groups)):
+            combined_preds = []
+            combined_true = []
+            objective = 0
+            temp_group_metrics = {}
+            total_size = 0
+            weighted_acc = 0
+
+            for i, group in enumerate(unique_groups):
+                mask_group = A == group
+                temp_group_metrics[group] = self._compute_metrics(y_true[mask_group], y_prob[mask_group], threshold_combination[i])
+                
+                adjusted_labels = y_prob[mask_group] > threshold_combination[i]
+                combined_preds.extend(adjusted_labels)
+                combined_true.extend(y_true[mask_group])
+                
+                group_acc = accuracy_score(y_true[mask_group], adjusted_labels)
+                group_size = len(y_true[mask_group])
+                weighted_acc += group_acc * group_size
+                total_size += group_size
+
+            weighted_acc /= total_size
+
+            for i, group in enumerate(unique_groups):
+                group_metric_vector = np.array([temp_group_metrics[group][metric_name] for metric_name in metrics_functions.keys()])
+
+                for other_group in unique_groups:
+                    if group != other_group:
+                        other_group_metric_vector = np.array([temp_group_metrics[other_group][metric_name] for metric_name in metrics_functions.keys()])
+                        distances = cdist(group_metric_vector.reshape(1, -1), other_group_metric_vector.reshape(1, -1), metric='euclidean')
+                        objective += np.sum(distances)
+            
+            objective += lambda_ * (1 - weighted_acc)
+
+            if objective < best_objective_value:
+                best_objective_value = objective
+                best_thresholds = dict(zip(unique_groups, threshold_combination))
+
+        print(f'Best objective value: {best_objective_value}')
+
+        return best_thresholds
