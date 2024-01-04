@@ -1,0 +1,12 @@
+---
+datasets:
+  ACSEmployment:
+    - RAC1P_recoded
+    - SEX
+  students:
+    - sex
+
+ACS_sample_only: True
+
+exp_var1: 1.0
+exp_var2: True

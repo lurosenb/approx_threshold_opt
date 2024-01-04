@@ -1,0 +1,31 @@
+---
+datasets:
+  ACSEmployment:
+    - RAC1P_recoded
+    - SEX
+  ACSIncome:
+    - RAC1P_recoded
+    - SEX
+  ACSMobility:
+    - RAC1P_recoded
+    - SEX
+  ACSPublicCoverage:
+    - RAC1P_recoded
+    - SEX
+  ACSTravelTime:
+    - RAC1P_recoded
+    - SEX
+  diabetes:
+    - SEX
+  heart_disease:
+    - sex
+  loans:
+    - sex
+    - education
+  students:
+    - sex
+
+ACS_sample_only: True
+
+exp_var1: 1.0
+exp_var2: True
