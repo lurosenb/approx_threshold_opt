@@ -1,6 +1,6 @@
 logistic_regression:
-  solver: ['liblinear', 'lbfgs']
-  max_iter: [1000, 5000]
+  solver: ['liblinear']
+  max_iter: [5000]
 
 random_forest:
   n_estimators: [100, 200]
@@ -15,7 +15,7 @@ svc:
   kernel: ['linear', 'rbf', 'poly']
 
 knn:
-  n_neighbors: [3, 5, 10, 20]
+  n_neighbors: [10, 20]
   weights: ['uniform', 'distance']
 
 mlp:

@@ -34,19 +34,19 @@ class FairDataset:
 
     def get_data(self):
         return self.dataframe, self.target, self.sensitive_attrs
-
+    
 class FairPipeline:
     def __init__(self, classifiers, 
                  classifier_config_path, 
                  metrics, 
                  metric_functions, 
-                 lambda_=0.5, 
+                 lambdas=[0.1,0.3,0.5,0.7,0.9], 
                  max_error=0.02, 
                  max_total_combinations=1000):
         self.classifiers = classifiers
         self.metrics = metrics
         self.metric_functions = metric_functions
-        self.lambda_ = lambda_
+        self.lambdas = lambdas
         self.param_grids = self.load_param_grids(classifier_config_path)
         self.results_df = pd.DataFrame()
         self.max_error = max_error
@@ -70,15 +70,31 @@ class FairPipeline:
 
                 self.evaluate_classifier(best_clf, dataset, clf_name, best_params, 'original', dataset_name, X, y, A)
 
-                fair_clf = ApproxThresholdGeneral(clf, self.metric_functions, self.lambda_, max_error=self.max_error, max_total_combinations=self.max_total_combinations)
-                fair_clf.fit(X, y, A)
-                self.evaluate_classifier(fair_clf, dataset, clf_name, best_params, 'fair', dataset_name, X, y, A)
+                for l in self.lambdas:
+                    fair_clf = ApproxThresholdGeneral(clf, 
+                                                    self.metric_functions, 
+                                                    l, 
+                                                    max_error=self.max_error, 
+                                                    max_total_combinations=self.max_total_combinations)
+                    fair_clf.fit(X, y, A)
+                    
+                    fair_clf_info = {
+                        'best_objective_value': fair_clf.best_objective_value,  
+                        'best_thresholds': fair_clf.thresholds_,  
+                        'best_epsilons': fair_clf.epsilons_,
+                        'max_epsilon': fair_clf.max_epsilon,
+                        'lambda': fair_clf.lambda_,
+                        'global_metric': str(fair_clf.global_metric.__name__),
+                    }
+                            
+                    self.evaluate_classifier(fair_clf, dataset, clf_name, best_params, 'fair', dataset_name, X, y, A, fair_clf_info)
+                    del fair_clf
 
                 del grid_search
                 del best_clf
-                del fair_clf
                 
-    def evaluate_classifier(self, classifier, dataset, clf_name, hyperparams, method, dataset_name, X, y, A):
+                
+    def evaluate_classifier(self, classifier, dataset, clf_name, hyperparams, method, dataset_name, X, y, A, fair_clf_info=None):
         if method == 'fair':
             y_pred = classifier.predict(X, A)  # fair classifiers requires sensitive attribute
         else:
@@ -94,6 +110,9 @@ class FairPipeline:
             **hyperparams
         }
 
+        if method == 'fair' and fair_clf_info:
+            overall_result.update(fair_clf_info)
+
         print(f"Overall metrics for {clf_name} ({method}): {overall_metrics}")
         print(f"Hyperparameters: {hyperparams}")
         self.results_df = self.results_df.append(overall_result, ignore_index=True)
@@ -108,6 +127,10 @@ class FairPipeline:
                 **group_metrics,
                 **hyperparams
             }
+
+            if method == 'fair' and fair_clf_info:
+                group_result.update(fair_clf_info)
+
             self.results_df = self.results_df.append(group_result, ignore_index=True)
             print(f"Metrics for {clf_name} ({method}) on {group_value}: {group_metrics}")
             print(f"Hyperparameters: {hyperparams}")
