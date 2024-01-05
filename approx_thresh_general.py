@@ -33,21 +33,29 @@ def precision(y_true, y_prob, threshold=0.5):
     FP = np.sum((y_pred == 1) & (y_true == 0))
     return TP / (TP + FP) if (TP + FP) > 0 else 0
 
+def accuracy(y_true, y_prob, threshold=0.5):
+    y_pred = (y_prob >= threshold).astype(int)
+    return np.sum(y_pred == y_true) / len(y_true)
+
 class ApproxThresholdGeneral(BaseEstimator, ClassifierMixin):
-    def __init__(self, base_model, metric_functions, lambda_=0.5):
+    def __init__(self, base_model, metric_functions, lambda_=0.5, global_metric=accuracy, max_epsilon=1.0):
         self.base_model = base_model
         self.metric_functions = metric_functions  # list of metric functions i.e. lambda
         self.lambda_ = lambda_
         self.thresholds_ = None
+        self.epsilons_ = None
+        self.global_metric = global_metric
+        self.max_epsilon = max_epsilon
+        self.best_objective_value = None
 
-    def fit(self, X, y, A, efficient=True):
+    def fit(self, X, y, A):
         self.base_model.fit(X, y)
         y_prob = self.base_model.predict_proba(X)[:, 1]
         
         self.group_metrics = {}
         self.group_thresholds = {}
         unique_groups = np.unique(A)
-        self.thresholds_ = self._find_intersection(y, y_prob, A, unique_groups, self.metric_functions, lambda_=self.lambda_)
+        self.thresholds_, self.epsilons_ = self._find_intersection(y, y_prob, A, unique_groups, self.metric_functions, lambda_=self.lambda_)
 
         return self
 
@@ -78,11 +86,12 @@ class ApproxThresholdGeneral(BaseEstimator, ClassifierMixin):
     def _find_intersection(self, y_true, y_prob, A, unique_groups, metrics_functions, lambda_=0.5, resource_constraint=None):
         best_objective_value = float('inf')
         best_thresholds = {}
+        best_epsilons = {}
         all_threshold_combinations = self._compute_all_thresholds_per_group(y_true, y_prob, unique_groups, A)
-        
+
         for group in unique_groups:
             self.group_metrics[group] = {}
-        
+
         for idx, threshold_combination in enumerate(all_threshold_combinations):
             combined_preds = []
             combined_true = []
@@ -90,48 +99,57 @@ class ApproxThresholdGeneral(BaseEstimator, ClassifierMixin):
             temp_group_metrics = {}
             total_size = 0
             weighted_acc = 0
+            max_epsilon_violation = False
 
             for i, group in enumerate(unique_groups):
                 mask_group = A == group
                 temp_group_metrics[group] = self._compute_metrics(y_true[mask_group], y_prob[mask_group], threshold_combination[i])
                 self.group_metrics[group][idx] = temp_group_metrics[group]
-                
+
                 adjusted_labels = y_prob[mask_group] > threshold_combination[i]
                 combined_preds.extend(adjusted_labels)
                 combined_true.extend(y_true[mask_group])
-                
-                group_acc = accuracy_score(y_true[mask_group], adjusted_labels)
+
+                group_acc = self.global_metric(y_true[mask_group], y_prob[mask_group], threshold_combination[i])
                 group_size = len(y_true[mask_group])
                 weighted_acc += group_acc * group_size
                 total_size += group_size
 
             weighted_acc /= total_size
 
+            temp_epsilons = {}
             for i, group in enumerate(unique_groups):
-                # here, we need to make a full vector of metrics
                 group_metric_vector = np.array([temp_group_metrics[group][metric_name] for metric_name in metrics_functions.keys()])
+                temp_epsilons[group] = {}
 
                 for other_group in unique_groups:
                     if group != other_group:
                         other_group_metric_vector = np.array([temp_group_metrics[other_group][metric_name] for metric_name in metrics_functions.keys()])
-
-                        # and then do euclidean distance between that metric and the other group's metric vector
                         distances = cdist(group_metric_vector.reshape(1, -1), other_group_metric_vector.reshape(1, -1), metric='euclidean')
                         objective += np.sum(distances)
-            
+
+                        # Check for max epsilon violation
+                        epsilon_diff = np.abs(group_metric_vector - other_group_metric_vector)
+                        if np.any(epsilon_diff > self.max_epsilon):
+                            max_epsilon_violation = True
+                        temp_epsilons[group][other_group] = epsilon_diff
+
             objective += lambda_ * (1 - weighted_acc)
 
             if resource_constraint is not None and sum(combined_preds) > resource_constraint:
                 continue
 
-            if objective < best_objective_value:
+            if not max_epsilon_violation and objective < best_objective_value:
                 best_objective_value = objective
                 best_thresholds = dict(zip(unique_groups, threshold_combination))
+                best_epsilons = temp_epsilons
                 self.best_index = idx
 
         print(f'Best objective value: {best_objective_value}')
         print(f'Best thresholds: {best_thresholds}')
-        return best_thresholds
+        print(f'Epsilon differences: {best_epsilons}')
+        self.best_objective_value = best_objective_value
+        return best_thresholds, best_epsilons
 
 
     def plot_matplotlib(self, metric_keys=None):
@@ -334,8 +352,8 @@ class ApproxThresholdNet(ApproxThresholdGeneral):
     are (likely) 1-Lipschitz continuous, but the original metric functions are not.
     So, though principled, this method is still heuristic.
     """
-    def __init__(self, base_model, metric_functions, lambda_=0.5, max_error=0.01, L_f=None, max_total_combinations=100000):
-        super().__init__(base_model, metric_functions, lambda_=lambda_)
+    def __init__(self, base_model, metric_functions, lambda_=0.5, global_metric=accuracy, max_epsilon=1.0, max_error=0.01, L_f=None, max_total_combinations=100000):
+        super().__init__(base_model, metric_functions, lambda_=lambda_, global_metric=global_metric, max_epsilon=max_epsilon)
         self.max_error = max_error
         self.L_f = L_f
         self.max_total_combinations = max_total_combinations
@@ -347,6 +365,7 @@ class ApproxThresholdNet(ApproxThresholdGeneral):
         temp_group_metrics = {}
         total_size = 0
         weighted_acc = 0
+        max_epsilon_violation = False
 
         for i, group in enumerate(unique_groups):
             mask_group = A == group
@@ -356,14 +375,17 @@ class ApproxThresholdNet(ApproxThresholdGeneral):
             combined_preds.extend(adjusted_labels)
             combined_true.extend(y_true[mask_group])
             
-            group_acc = accuracy_score(y_true[mask_group], adjusted_labels)
+            # NOTE: change to be self.global_metric
+            group_acc = self.global_metric(y_true[mask_group], y_prob[mask_group], threshold_combination[i])
             group_size = len(y_true[mask_group])
             weighted_acc += group_acc * group_size
             total_size += group_size
 
         weighted_acc /= total_size
 
+        temp_epsilons = {}
         for i, group in enumerate(unique_groups):
+            temp_epsilons[group] = {}
             group_metric_vector = np.array([temp_group_metrics[group][metric_name] for metric_name in metrics_functions.keys()])
 
             for other_group in unique_groups:
@@ -371,10 +393,16 @@ class ApproxThresholdNet(ApproxThresholdGeneral):
                     other_group_metric_vector = np.array([temp_group_metrics[other_group][metric_name] for metric_name in metrics_functions.keys()])
                     distances = cdist(group_metric_vector.reshape(1, -1), other_group_metric_vector.reshape(1, -1), metric='euclidean')
                     objective += np.sum(distances)
+            
+                    # Check for max epsilon violation
+                    epsilon_diff = np.abs(group_metric_vector - other_group_metric_vector)
+                    if np.any(epsilon_diff > self.max_epsilon):
+                        max_epsilon_violation = True
+                    temp_epsilons[group][other_group] = epsilon_diff
         
         objective += lambda_ * (1 - weighted_acc)
 
-        return objective, threshold_combination
+        return objective, threshold_combination, temp_epsilons, max_epsilon_violation
 
     def _find_intersection(self, y_true, y_prob, A, unique_groups, metrics_functions, lambda_=0.5):
         binom_metric_funcs = len(metrics_functions) * (len(metrics_functions) - 1) / 2
@@ -406,23 +434,32 @@ class ApproxThresholdNet(ApproxThresholdGeneral):
 
         threshold_points = np.linspace(0, 1, N)
         objectives = {}
+        epsilons = {}
+
+        # best_epsilons = {}
         combos = list(product(threshold_points, repeat=len(unique_groups)))
         with ProcessPoolExecutor() as executor:
             future_to_combination = {executor.submit(self.evaluate_combination, tc, y_true, y_prob, A, unique_groups, metrics_functions, lambda_): tc for tc in combos}
             
             for future in tqdm(as_completed(future_to_combination), total=total_combinations, desc="Threshold Combinations"):
                 threshold_combination = future_to_combination[future]
-                objective_value, _ = future.result()
-                objectives[threshold_combination] = objective_value
+                objective_value, _, temp_epsilons, max_epsilon_violation = future.result()
+                
+                if not max_epsilon_violation:
+                    objectives[threshold_combination] = objective_value
+                    epsilons[threshold_combination] = temp_epsilons
 
             executor.shutdown(wait=True)
 
         # find the best objective value and corresponding thresholds after collecting all results
         best_threshold_combination = min(objectives, key=objectives.get)
         best_objective_value = objectives[best_threshold_combination]
+        best_epsilons = epsilons[best_threshold_combination]
         best_thresholds = dict(zip(unique_groups, best_threshold_combination))
 
         print(f'Best objective value: {best_objective_value}')
         print(f'Best thresholds: {best_thresholds}')
-        return best_thresholds
+        print(f'Epsilon differences: {best_epsilons}')
+        self.best_objective_value = best_objective_value
+        return best_thresholds, best_epsilons
     
