@@ -2,24 +2,34 @@
 datasets:
   ACSIncome_mfopt:
     - RAC1P_recoded
+    - SEX
   ACSIncome:
     - RAC1P_recoded
+    - SEX
   ACSMobility_mfopt:
     - RAC1P_recoded
+    - SEX
   ACSMobility:
     - RAC1P_recoded
+    - SEX
   ACSEmployment_mfopt:
     - RAC1P_recoded
+    - SEX
   ACSEmployment:
     - RAC1P_recoded
+    - SEX
   ACSPublicCoverage_mfopt:
     - RAC1P_recoded
+    - SEX
   ACSPublicCoverage:
     - RAC1P_recoded
+    - SEX
   ACSTravelTime_mfopt:
     - RAC1P_recoded
+    - SEX
   ACSTravelTime:
     - RAC1P_recoded
+    - SEX
   diabetes:
     - SEX
   heart_disease:

@@ -1,10 +1,13 @@
 logistic_regression:
-  solver: ['liblinear']
+  solver: ['liblinear',lbfgs]
   max_iter: [5000]
 
 random_forest:
   n_estimators: [100, 200]
-  max_depth: [5, 10, 20, 50]
+  max_features: ['auto',0.5]
+  max_depth: [3, 4, 8, 10, 20]
+  min_samples_leaf: [1, 2, 4, 8]
+  min_samples_split: [2, 4, 6, 10]
 
 gradient_boosting:
   n_estimators: [50, 100, 200]
@@ -23,3 +26,20 @@ mlp:
   activation: ['relu', 'tanh', 'logistic']
   learning_rate_init: [0.001, 0.01, 0.1]
   alpha: [0.0001, 0.001, 0.01]
+
+lgb:
+  learning_rate: [0.005, 0.01]
+  n_estimators: [8,16,24]
+  num_leaves: [16,32,64]
+  max_bin: [255, 510]
+  boosting_type: ['gbdt', 'dart']
+  colsample_bytree: [0.64, 0.65, 0.66]
+  subsample: [0.9]
+  reg_lambda: [1,1.2]
+  reg_alpha: [1,1.2,1.4]
+
+xgb:
+  n_estimators: [100, 400, 800]
+  max_depth: [3, 6, 9]
+  learning_rate: [0.05, 0.1, 0.20]
+  min_child_weight: [1, 10, 100]

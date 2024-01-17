@@ -16,32 +16,28 @@ from tqdm import tqdm
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from metrics import tpr, fpr, precision, npv, accuracy, f1, selection_rate
 
-MAX_WORKERS = 32
+MAX_WORKERS=32
 
 class ApproxThresholdGeneral(BaseEstimator, ClassifierMixin):
-    def __init__(self, base_model, metric_functions, lambda_=0.5, global_metric=accuracy, max_epsilon=1.0):
-        self.base_model = base_model
-        self.metric_functions = metric_functions  # list of metric functions i.e. lambda
+    def __init__(self, metric_functions, lambda_=0.5, global_metric=f1, max_epsilon=1.0, max_error=0, max_total_combinations=1):
+        self.metric_functions = metric_functions  # list of metric functions
         self.lambda_ = lambda_
         self.thresholds_ = None
         self.epsilons_ = None
         self.global_metric = global_metric
         self.max_epsilon = max_epsilon
         self.best_objective_value = None
+        self.y_prob = None
 
-    def fit(self, X, y, A):
-        self.base_model.fit(X, y)
-        y_prob = self.base_model.predict_proba(X)[:, 1]
-        
+    def fit(self, y_prob, y, A):
         self.group_metrics = {}
         self.group_thresholds = {}
         unique_groups = np.unique(A)
+        
         self.thresholds_, self.epsilons_ = self._find_intersection(y, y_prob, A, unique_groups, self.metric_functions, lambda_=self.lambda_)
-
         return self
 
-    def predict(self, X, A):
-        y_prob = self.base_model.predict_proba(X)[:, 1]
+    def predict(self, y_prob, A):
         adjusted_labels = np.zeros(A.shape)
 
         unique_groups = np.unique(A)
@@ -73,7 +69,7 @@ class ApproxThresholdGeneral(BaseEstimator, ClassifierMixin):
         for group in unique_groups:
             self.group_metrics[group] = {}
 
-        for idx, threshold_combination in enumerate(all_threshold_combinations):
+        for idx, threshold_combination in enumerate(tqdm(all_threshold_combinations, desc="Processing combinations")):
             combined_preds = []
             combined_true = []
             objective = 0
@@ -133,185 +129,6 @@ class ApproxThresholdGeneral(BaseEstimator, ClassifierMixin):
         return best_thresholds, best_epsilons
 
 
-    def plot_matplotlib(self, metric_keys=None):
-        """
-        This method plots the metric curves for each group based on the A membership.
-        If three metrics are provided, it will produce a 3D plot; otherwise, a 2D plot.
-        :param metric_keys: Optional list of metric keys to plot. Defaults to all keys.
-        """
-        if metric_keys is None:
-            metric_keys = list(self.metric_functions.keys())
-
-        num_metrics = len(metric_keys)
-
-        if num_metrics == 3:
-            fig = plt.figure(figsize=(10, 8))
-            ax = fig.add_subplot(111, projection='3d')
-
-            for group in self.group_metrics.keys():
-                x_data = [metrics[metric_keys[0]] for idx, metrics in self.group_metrics[group].items()]
-                y_data = [metrics[metric_keys[1]] for idx, metrics in self.group_metrics[group].items()]
-                z_data = [metrics[metric_keys[2]] for idx, metrics in self.group_metrics[group].items()]
-                
-                ax.plot(x_data, y_data, z_data, label=f'Group {group}')
-                
-                best_metrics = self.group_metrics[group][self.best_index]
-                ax.scatter(best_metrics[metric_keys[0]], best_metrics[metric_keys[1]], best_metrics[metric_keys[2]], s=100, marker='o', label=f'Best Threshold for Group {group}')
-
-            ax.set_xlabel(metric_keys[0])
-            ax.set_ylabel(metric_keys[1])
-            ax.set_zlabel(metric_keys[2])
-            ax.set_title('3D Metric plot')
-            ax.legend()
-            plt.show()
-
-        elif num_metrics == 2:
-            fig, ax = plt.subplots(figsize=(8, 6))
-
-            for group in self.group_metrics.keys():
-                x_data = [metrics[metric_keys[0]] for idx, metrics in self.group_metrics[group].items()]
-                y_data = [metrics[metric_keys[1]] for idx, metrics in self.group_metrics[group].items()]
-                
-                ax.plot(x_data, y_data, z_data, label=f'Group {group}')
-                
-                best_metrics = self.group_metrics[group][self.best_index]
-                ax.scatter(best_metrics[metric_keys[0]], best_metrics[metric_keys[1]], s=100, marker='o', label=f'Best Threshold for Group {group}')
-
-            ax.set_xlabel(metric_keys[0])
-            ax.set_ylabel(metric_keys[1])
-            ax.set_title('2D Metric plot')
-            ax.legend()
-            plt.show()
-
-        else:
-            raise ValueError("The number of metrics must be 2 or 3.")
-
-    def plot_plotly(self, metric_keys=None):
-        """
-        This method plots the metric curves for each group based on the A membership using Plotly.
-        If three metrics are provided, it will produce a 3D plot; otherwise, a 2D plot.
-        :param metric_keys: Optional list of metric keys to plot. Defaults to all keys.
-        """
-        if metric_keys is None:
-            metric_keys = list(self.metric_functions.keys())
-
-        num_metrics = len(metric_keys)
-
-        if num_metrics == 3:
-            fig = go.Figure()
-
-            for group in self.group_metrics.keys():
-                x_data = [metrics[metric_keys[0]] for idx, metrics in self.group_metrics[group].items()]
-                y_data = [metrics[metric_keys[1]] for idx, metrics in self.group_metrics[group].items()]
-                z_data = [metrics[metric_keys[2]] for idx, metrics in self.group_metrics[group].items()]
-
-                fig.add_trace(go.Scatter3d(x=x_data, y=y_data, z=z_data, mode='lines', name=f'Group {group} Line'))
-
-                best_metrics = self.group_metrics[group][self.best_index]
-                fig.add_trace(go.Scatter3d(x=[best_metrics[metric_keys[0]]],
-                                        y=[best_metrics[metric_keys[1]]],
-                                        z=[best_metrics[metric_keys[2]]],
-                                        mode='markers', marker=dict(size=8, symbol='circle'),
-                                        name=f'Best Threshold for Group {group}'))
-
-            fig.update_layout(title='3D Metric Plot',
-                            scene=dict(xaxis_title=metric_keys[0],
-                                        yaxis_title=metric_keys[1],
-                                        zaxis_title=metric_keys[2]))
-            fig.show()
-
-        elif num_metrics == 2:
-            fig = go.Figure()
-
-            for group in self.group_metrics.keys():
-                x_data = [metrics[metric_keys[0]] for idx, metrics in self.group_metrics[group].items()]
-                y_data = [metrics[metric_keys[1]] for idx, metrics in self.group_metrics[group].items()]
-
-                fig.add_trace(go.Scatter(x=x_data, y=y_data, mode='lines', name=f'Group {group} Line'))
-
-                best_metrics = self.group_metrics[group][self.best_index]
-                fig.add_trace(go.Scatter(x=[best_metrics[metric_keys[0]]],
-                                        y=[best_metrics[metric_keys[1]]],
-                                        mode='markers', marker=dict(size=8, symbol='circle'),
-                                        name=f'Best Threshold for Group {group}'))
-
-            fig.update_layout(title='2D Metric Plot',
-                            xaxis_title=metric_keys[0],
-                            yaxis_title=metric_keys[1])
-            fig.show()
-
-        else:
-            raise ValueError("The number of metrics must be 2 or 3.")
-
-    def plot_performance_comparison(self, X_test, y_test, A_test):
-        """
-        Plot performance metrics comparison between original and adjusted thresholds.
-        
-        Note:
-        Assumes calibration i.e. a default threshold of 0.5 for the original predictions.
-        """
-        y_prob = self.base_model.predict_proba(X_test)[:, 1]
-        original_predictions = np.where(y_prob > 0.5, 1, 0)
-
-        original_accuracy = accuracy_score(y_test, original_predictions)
-        original_f1 = f1_score(y_test, original_predictions)
-        original_precision = precision_score(y_test, original_predictions)
-        original_recall = recall_score(y_test, original_predictions)
-        
-        adjusted_labels = self.predict(X_test, A_test)
-
-        adjusted_accuracy = accuracy_score(y_test, adjusted_labels)
-        adjusted_f1 = f1_score(y_test, adjusted_labels)
-        adjusted_precision = precision_score(y_test, adjusted_labels)
-        adjusted_recall = recall_score(y_test, adjusted_labels)
-
-        metrics = ['Accuracy', 'F1 Score', 'Precision', 'Recall']
-        original_values = [original_accuracy, original_f1, original_precision, original_recall]
-        adjusted_values = [adjusted_accuracy, adjusted_f1, adjusted_precision, adjusted_recall]
-
-        fig = go.Figure(data=[
-            go.Bar(name='Original', x=metrics, y=original_values),
-            go.Bar(name='Adjusted', x=metrics, y=adjusted_values)
-        ])
-
-        fig.update_layout(barmode='group', title='Performance Comparison: Original vs. Adjusted Thresholds',
-                        yaxis=dict(title='Score', range=[0, 1.05]),
-                        xaxis=dict(title='Metrics'))
-        fig.show()
-
-    def plot_performance_comparison_groups(self, X_test, y_test, A_test):
-        y_prob = self.base_model.predict_proba(X_test)[:, 1]
-        original_predictions = np.where(y_prob > 0.5, 1, 0)
-
-        unique_groups = np.unique(A_test)
-        metrics = ['Accuracy', 'F1 Score', 'Precision', 'Recall']
-        
-        fig = go.Figure()
-
-        for group in unique_groups:
-            group_mask = A_test == group
-
-            original_accuracy = accuracy_score(y_test[group_mask], original_predictions[group_mask])
-            original_f1 = f1_score(y_test[group_mask], original_predictions[group_mask])
-            original_precision = precision_score(y_test[group_mask], original_predictions[group_mask])
-            original_recall = recall_score(y_test[group_mask], original_predictions[group_mask])
-            original_values = [original_accuracy, original_f1, original_precision, original_recall]
-
-            adjusted_labels = self.predict(X_test[group_mask], A_test[group_mask])
-            adjusted_accuracy = accuracy_score(y_test[group_mask], adjusted_labels)
-            adjusted_f1 = f1_score(y_test[group_mask], adjusted_labels)
-            adjusted_precision = precision_score(y_test[group_mask], adjusted_labels)
-            adjusted_recall = recall_score(y_test[group_mask], adjusted_labels)
-            adjusted_values = [adjusted_accuracy, adjusted_f1, adjusted_precision, adjusted_recall]
-
-            fig.add_trace(go.Bar(name=f'Original Group {group}', x=metrics, y=original_values, marker_color='blue'))
-            fig.add_trace(go.Bar(name=f'Adjusted Group {group}', x=metrics, y=adjusted_values, marker_color='red'))
-
-        fig.update_layout(barmode='group', title='Performance Comparison: Original vs. Adjusted Thresholds by Group',
-                        yaxis=dict(title='Score', range=[0, 1.05]),
-                        xaxis=dict(title='Metrics'))
-        fig.show()
-
 class ApproxThresholdNet(ApproxThresholdGeneral):
     """
     Here, we use an epsilon net to find the best threshold combination. 
@@ -333,8 +150,8 @@ class ApproxThresholdNet(ApproxThresholdGeneral):
     are (likely) 1-Lipschitz continuous, but the original metric functions are not.
     So, though principled, this method is still heuristic.
     """
-    def __init__(self, base_model, metric_functions, lambda_=0.5, global_metric=accuracy, max_epsilon=1.0, max_error=0.01, L_f=None, max_total_combinations=100000):
-        super().__init__(base_model, metric_functions, lambda_=lambda_, global_metric=global_metric, max_epsilon=max_epsilon)
+    def __init__(self, metric_functions, lambda_=0.5, global_metric=f1, max_epsilon=1.0, max_error=0.01, L_f=None, max_total_combinations=100000):
+        super().__init__(metric_functions, lambda_=lambda_, global_metric=global_metric, max_epsilon=max_epsilon)
         self.max_error = max_error
         self.L_f = L_f
         self.max_total_combinations = max_total_combinations
@@ -408,7 +225,8 @@ class ApproxThresholdNet(ApproxThresholdGeneral):
             max_error = epsilon * self.L_f / range_f
             total_combinations = N ** len(unique_groups)
             print(f"Adjusted max_error to {max_error} to limit total combinations to approximately {self.max_total_combinations}")
-
+            self.max_error = max_error
+            
         print(f'Number of points in the epsilon net: {N}')
         print(f'Adjusted max_error: {max_error}')
         print(f'Number of points in data: {len(y_true)}')
