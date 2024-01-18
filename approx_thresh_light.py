@@ -14,9 +14,23 @@ from math import ceil
 from tqdm import tqdm
 
 from concurrent.futures import ProcessPoolExecutor, as_completed
+# import multiprocessing as mp
+
 from metrics import tpr, fpr, precision, npv, accuracy, f1, selection_rate
 
+import os
+import psutil
+
 MAX_WORKERS=32
+
+def print_system_info():
+    # Number of CPU cores
+    cpu_cores = os.cpu_count()
+    print(f"Number of CPU cores available: {cpu_cores}")
+
+    # Current running processes
+    process_count = len(psutil.pids())
+    print(f"Number of running processes: {process_count}")
 
 class ApproxThresholdGeneral(BaseEstimator, ClassifierMixin):
     def __init__(self, metric_functions, lambda_=0.5, global_metric=f1, max_epsilon=1.0, max_error=0, max_total_combinations=1):
@@ -235,11 +249,16 @@ class ApproxThresholdNet(ApproxThresholdGeneral):
         objectives = {}
         epsilons = {}
 
+        print_system_info()
+
         # best_epsilons = {}
         combos = list(product(threshold_points, repeat=len(unique_groups)))
         with ProcessPoolExecutor(max_workers=MAX_WORKERS) as executor:
+            # , mp_context=mp.get_context('fork')
+            print(executor._mp_context)
+            print('Enters pool')
             future_to_combination = {executor.submit(self.evaluate_combination, tc, y_true, y_prob, A, unique_groups, metrics_functions, lambda_): tc for tc in combos}
-            
+            print('Submits futures')
             for future in tqdm(as_completed(future_to_combination), total=total_combinations, desc="Threshold Combinations"):
                 threshold_combination = future_to_combination[future]
                 objective_value, _, temp_epsilons, max_epsilon_violation = future.result()

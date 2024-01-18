@@ -2,33 +2,6 @@
 datasets:
   ACSIncome_mfopt:
     - RAC1P_recoded
-  ACSIncome:
-    - RAC1P_recoded
-  ACSMobility_mfopt:
-    - RAC1P_recoded
-  ACSMobility:
-    - RAC1P_recoded
-  ACSEmployment_mfopt:
-    - RAC1P_recoded
-  ACSEmployment:
-    - RAC1P_recoded
-  ACSPublicCoverage_mfopt:
-    - RAC1P_recoded
-  ACSPublicCoverage:
-    - RAC1P_recoded
-  ACSTravelTime_mfopt:
-    - RAC1P_recoded
-  ACSTravelTime:
-    - RAC1P_recoded
-  diabetes:
-    - SEX
-  heart_disease:
-    - sex
-  loans:
-    - sex
-    - education
-  students:
-    - sex
 
 ACS_sample_only: True
 

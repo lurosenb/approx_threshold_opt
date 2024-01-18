@@ -4,8 +4,9 @@ import yaml
 import time
 
 from sklearn.model_selection import GridSearchCV, RandomizedSearchCV
+from sklearn.calibration import CalibratedClassifierCV
 
-from sklearn.metrics import roc_auc_score
+from sklearn.metrics import roc_auc_score, f1_score
 
 # DELETE
 from sklearn.model_selection import train_test_split
@@ -52,7 +53,7 @@ class FairDataset:
         return self.dataframe, self.target, self.sensitive_attrs
     
 class FairPipeline:
-    def __init__(self, classifiers, classifier_config_path, metrics, metric_functions, lambdas=[0.1,0.3,0.5,0.7,0.9], max_error=0.02, max_total_combinations=1000, random_state=42):
+    def __init__(self, classifiers, classifier_config_path, metrics, metric_functions, lambdas=[0.1,0.3,0.5,0.7,0.9], max_error=0.02, max_total_combinations=1000, random_state=42, calibrate=True):
         self.classifiers = classifiers
         self.metrics = metrics
         self.metric_functions = metric_functions
@@ -63,6 +64,7 @@ class FairPipeline:
         self.max_total_combinations = max_total_combinations
         self.overall_max_error = 0
         self.random_state = random_state
+        self.calibrate = calibrate
 
     def load_param_grids(self, config_path):
         with open(config_path, 'r') as file:
@@ -98,9 +100,23 @@ class FairPipeline:
             test_erm = pd.DataFrame({'s':yhat_test_erm, 'y': y_test.astype('int')})
             roc_auc_score(train_erm['y'], train_erm['s'])
             roc_auc_score(test_erm['y'], test_erm['s'])
+            print('Following metrics are OVERALL:')
             print('PRE Train AUC: ', roc_auc_score(train_erm['y'], train_erm['s']))
             print('PRE Test AUC: ', roc_auc_score(test_erm['y'], test_erm['s']))
+            print('PRE Calibration Train F1 Score: ', f1_score(y_train, best_clf.predict(X_train)))
+            print('PRE Calibration Test F1 Score: ', f1_score(y_test, best_clf.predict(X_test)))
 
+            if self.calibrate:
+                print('Calibrating...')
+                best_clf = CalibratedClassifierCV(best_clf, method='isotonic', cv='prefit')
+                best_clf.fit(X_train, y_train)
+
+                print('POST Calibration Train AUC: ', roc_auc_score(y_train, best_clf.predict_proba(X_train)[:, 1]))
+                print('POST Calibration Test AUC: ', roc_auc_score(y_test, best_clf.predict_proba(X_test)[:, 1]))
+                print('POST Calibration Train F1 Score: ', f1_score(y_train, best_clf.predict(X_train)))
+                print('POST Calibration Test F1 Score: ', f1_score(y_test, best_clf.predict(X_test)))
+
+            print()
             del random_search
 
             y_prob_test = best_clf.predict_proba(X_test)[:, 1]
