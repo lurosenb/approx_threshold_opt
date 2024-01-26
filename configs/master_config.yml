@@ -14,27 +14,42 @@ datasets:
   #   - RAC1P_recoded
   # ACSTravelTime:
   #   - RAC1P_recoded
-  ACSMobility:
+  ACSMobility_mfopt:
     - RAC1P_recoded
 
 datasets_settings:
   ACSIncome:
     - f1
+  ACSIncome_mfopt:
+    - f1
   ACSInsurance:
+    - precision
+  ACSInsurance_mfopt:
     - precision
   ACSPoverty:
     - f1
+  ACSPoverty_mfopt:
+    - f1
   ACSTravelTime:
     - f1
+  ACSTravelTime_mfopt:
+    - f1
   ACSMobility:
-    - npv
+    - f1
+  ACSMobility_mfopt:
+    - f1
 
 lambda_settings:
   ACSIncome: [0.1, 1.0, 5.0, 10.0, 20.0]
   ACSInsurance: [0.1, 1.0, 5.0, 10.0, 20.0]
   ACSPoverty: [0.1, 1.0, 5.0, 10.0, 20.0]
   ACSTravelTime: [0.1, 1.0, 5.0, 10.0, 20.0]
-  ACSMobility: [2.0]
+  ACSMobility: [2.5]
+  ACSIncome_mfopt: [0.1, 1.0, 5.0, 10.0, 20.0]
+  ACSInsurance_mfopt: [0.1, 1.0, 5.0, 10.0, 20.0]
+  ACSPoverty_mfopt: [0.1, 1.0, 5.0, 10.0, 20.0]
+  ACSTravelTime_mfopt: [0.1, 1.0, 5.0, 10.0, 20.0]
+  ACSMobility_mfopt: [10.0]
 
   
 

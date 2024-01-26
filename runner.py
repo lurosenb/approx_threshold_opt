@@ -96,12 +96,12 @@ if __name__ == '__main__':
         lambda_list = lambda_settings[DATASET_NAME]
 
         print(f"Running pipeline for dataset: {DATASET_NAME}")
-        if DATASET_NAME in ('ACSEmployment','ACSIncome','ACSMobility','ACSPublicCoverage','ACSTravelTime'):
-            X = pd.read_csv(f'matrices/{DATASET_NAME}/Xs.csv')
-            y = pd.read_csv(f'matrices/{DATASET_NAME}/ys.csv').squeeze()
-        else:
-            X = pd.read_csv(f'matrices/{DATASET_NAME}/X.csv')
-            y = pd.read_csv(f'matrices/{DATASET_NAME}/y.csv').squeeze()
+        # if DATASET_NAME in ('ACSEmployment','ACSIncome','ACSMobility','ACSPublicCoverage','ACSTravelTime'):
+        #     X = pd.read_csv(f'matrices/{DATASET_NAME}/Xs.csv')
+        #     y = pd.read_csv(f'matrices/{DATASET_NAME}/ys.csv').squeeze()
+        # else:
+        X = pd.read_csv(f'matrices/{DATASET_NAME}/X.csv')
+        y = pd.read_csv(f'matrices/{DATASET_NAME}/y.csv').squeeze()
 
         # remove any rows that have null or nan
         X.dropna(inplace=True)

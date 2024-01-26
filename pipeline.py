@@ -54,7 +54,14 @@ class FairDataset:
         return self.dataframe, self.target, self.sensitive_attrs
     
 class FairPipeline:
-    def __init__(self, classifiers, classifier_config_path, metrics, metric_functions, global_metric=f1, lambdas=[0.1,1.0,10.0], max_error=0.02, max_total_combinations=1000, random_state=42, calibrate=False):
+    def __init__(self, classifiers, classifier_config_path, metrics, metric_functions, global_metric=f1, 
+                       lambdas=[0.1,1.0,10.0], 
+                       max_error=0.02, 
+                       max_total_combinations=1000, 
+                       random_state=42, 
+                       calibrate=False,
+                       hardt_model_default_constraint='selection_rate_parity',
+                       hardt_model_default_objective='balanced_accuracy_score',):
         self.classifiers = classifiers
         self.metrics = metrics
         self.metric_functions = metric_functions
@@ -67,6 +74,8 @@ class FairPipeline:
         self.random_state = random_state
         self.calibrate = calibrate
         self.global_metric = global_metric
+        self.hardt_model_default_constraint = hardt_model_default_constraint
+        self.hardt_model_default_objective = hardt_model_default_objective
 
     def load_param_grids(self, config_path):
         with open(config_path, 'r') as file:
@@ -121,9 +130,21 @@ class FairPipeline:
             print()
             del random_search
 
+            y_prob_train = best_clf.predict_proba(X_train)[:, 1]
             y_prob_test = best_clf.predict_proba(X_test)[:, 1]
 
             self.evaluate_classifier(best_clf, dataset, clf_name, best_params, 'original', dataset_name, X_test, y_test, A_test, y_prob=y_prob_test)
+
+            # hardt_model = ThresholdOptimizer(
+            #     estimator=best_clf,
+            #     constraints=self.hardt_model_default_constraint,
+            #     objective=self.hardt_model_default_objective,
+            #     prefit=True,
+            #     predict_method='predict_proba'
+            # )
+            # hardt_model.fit(X_train, y_train, sensitive_features=X_train['RAC1P'])
+
+            # self.evaluate_classifier(hardt_model, dataset, clf_name, best_params, 'hardt', dataset_name, X_test, y_test, A_test, y_prob=y_prob_test)
 
             for l in self.lambdas:
                 if 'mfopt' in dataset_name:
@@ -139,7 +160,7 @@ class FairPipeline:
                                                     max_total_combinations=self.max_total_combinations,
                                                     global_metric=self.global_metric)
 
-                fair_clf.fit(y_prob_test, y_test, A_test)
+                fair_clf.fit(y_prob_train, y_train, A_train)
                 
                 if self.overall_max_error < fair_clf.max_error:
                     self.overall_max_error = fair_clf.max_error
@@ -155,6 +176,7 @@ class FairPipeline:
                         
                 self.evaluate_classifier(fair_clf, dataset, clf_name, best_params, 'fair', dataset_name, X_test, y_test, A_test, fair_clf_info, y_prob=y_prob_test, best_clf=best_clf)
                 del fair_clf
+            
 
     def evaluate_classifier(self, classifier, dataset, clf_name, hyperparams, method, dataset_name, X, y, A, fair_clf_info=None, y_prob=None, best_clf=None):
         # NOTE: best_clf and classifier are the same classifier, this is just semantic
