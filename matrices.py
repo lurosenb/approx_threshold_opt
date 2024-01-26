@@ -1,8 +1,10 @@
 # %%
 import pandas as pd
 from sklearn.model_selection import train_test_split
-from folktables import ACSDataSource, ACSEmployment, ACSIncome, ACSPublicCoverage, ACSMobility, ACSTravelTime
+from folktables import ACSDataSource, ACSEmployment, ACSIncome, ACSPublicCoverage, ACSMobility, ACSTravelTime, ACSIncomePovertyRatio
+import folktables
 import os
+import numpy as np
 
 pd.set_option('display.max_columns', None)  
 
@@ -13,12 +15,50 @@ pd.set_option('display.max_columns', None)
 data_source = ACSDataSource(survey_year='2018', horizon='1-Year', survey='person')
 acs_data = data_source.get_data(states=["CA", "OR", "WA"], download=True) # , "NV", "AZ"
 
+ACSHealthInsurance = folktables.BasicProblem(
+    features=[
+        'AGEP',
+        'SCHL',
+        'MAR',
+        'SEX',
+        'DIS',
+        'ESP',
+        'CIT',
+        'MIG',
+        'MIL',
+        'ANC',
+        'NATIVITY',
+        'DEAR',
+        'DEYE',
+        'DREM',
+        'RACAIAN',
+        'RACASN',
+        'RACBLK',
+        'RACNH',
+        'RACPI',
+        'RACSOR',
+        'RACWHT',
+        'PINCP',
+        'ESR',
+        'ST',
+        'FER',
+        'RAC1P',
+    ],
+    target='HINS2',
+    target_transform=lambda x: x == 1,
+    group='RAC1P',
+    preprocess=lambda x: x,
+    postprocess=lambda x: np.nan_to_num(x, -1),
+)
+
 folktables = {
-    "ACSEmployment": ACSEmployment,
-    "ACSIncome": ACSIncome,
-    "ACSMobility": ACSMobility,
-    "ACSPublicCoverage": ACSPublicCoverage,
-    "ACSTravelTime": ACSTravelTime
+    # "ACSEmployment": ACSEmployment,
+    # "ACSIncome": ACSIncome,
+    # "ACSMobility": ACSMobility,
+    # "ACSPublicCoverage": ACSPublicCoverage,
+    # "ACSTravelTime": ACSTravelTime,
+    "ACSInsurance": ACSHealthInsurance,
+    # "ACSPoverty": ACSIncomePovertyRatio
 }
 
 #race_agg_names = {1: 'White',

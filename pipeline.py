@@ -7,6 +7,7 @@ from sklearn.model_selection import GridSearchCV, RandomizedSearchCV
 from sklearn.calibration import CalibratedClassifierCV
 
 from sklearn.metrics import roc_auc_score, f1_score
+from metrics import tpr, fpr, precision, npv, accuracy, f1, selection_rate
 
 # DELETE
 from sklearn.model_selection import train_test_split
@@ -53,7 +54,7 @@ class FairDataset:
         return self.dataframe, self.target, self.sensitive_attrs
     
 class FairPipeline:
-    def __init__(self, classifiers, classifier_config_path, metrics, metric_functions, lambdas=[0.1,0.3,0.5,0.7,0.9], max_error=0.02, max_total_combinations=1000, random_state=42, calibrate=True):
+    def __init__(self, classifiers, classifier_config_path, metrics, metric_functions, global_metric=f1, lambdas=[2.0, 2.1, 2.2, 2.3, 2.4, 2.5, 2.6, 2.7, 2.8, 2.9, 3.0], max_error=0.02, max_total_combinations=1000, random_state=42, calibrate=False):
         self.classifiers = classifiers
         self.metrics = metrics
         self.metric_functions = metric_functions
@@ -65,6 +66,7 @@ class FairPipeline:
         self.overall_max_error = 0
         self.random_state = random_state
         self.calibrate = calibrate
+        self.global_metric = global_metric
 
     def load_param_grids(self, config_path):
         with open(config_path, 'r') as file:
@@ -128,12 +130,14 @@ class FairPipeline:
                     fair_clf = ApproxThresholdNet(metric_functions=self.metric_functions, 
                                                     lambda_=l, 
                                                     max_error=0.001, 
-                                                    max_total_combinations=self.max_total_combinations)
+                                                    max_total_combinations=self.max_total_combinations,
+                                                    global_metric=self.global_metric)
                 else:
                     fair_clf = ApproxThresholdNet(metric_functions=self.metric_functions, 
                                                     lambda_=l, 
                                                     max_error=self.max_error, 
-                                                    max_total_combinations=self.max_total_combinations)
+                                                    max_total_combinations=self.max_total_combinations,
+                                                    global_metric=self.global_metric)
 
                 fair_clf.fit(y_prob_test, y_test, A_test)
                 

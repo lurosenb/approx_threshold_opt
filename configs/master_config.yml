@@ -1,7 +1,33 @@
 ---
 datasets:
-  ACSIncome_mfopt:
+  # ACSMobility_mfopt:
+  #   - RAC1P_recoded
+  # ACSIncome:
+  #   - RAC1P_recoded
+  # ACSInsurance:
+  #   - RAC1P_recoded
+  # ACSInsurance_mfopt:
+  #   - RAC1P_recoded
+  # ACSMobility_mfopt:
+  #   - RAC1P_recoded
+  # ACSPoverty:
+  #   - RAC1P_recoded
+  # ACSTravelTime:
+  #   - RAC1P_recoded
+  ACSMobility:
     - RAC1P_recoded
+
+datasets_settings:
+  ACSIncome:
+    - f1
+  ACSInsurance:
+    - precision
+  ACSPoverty:
+    - f1
+  ACSTravelTime:
+    - f1
+  ACSMobility:
+    - npv
 
 ACS_sample_only: True
 
