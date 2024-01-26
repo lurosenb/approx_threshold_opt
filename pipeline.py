@@ -5,6 +5,7 @@ import time
 
 from sklearn.model_selection import GridSearchCV, RandomizedSearchCV
 from sklearn.calibration import CalibratedClassifierCV
+from fairlearn.postprocessing import ThresholdOptimizer
 
 from sklearn.metrics import roc_auc_score, f1_score
 from metrics import tpr, fpr, precision, npv, accuracy, f1, selection_rate
@@ -135,16 +136,16 @@ class FairPipeline:
 
             self.evaluate_classifier(best_clf, dataset, clf_name, best_params, 'original', dataset_name, X_test, y_test, A_test, y_prob=y_prob_test)
 
-            # hardt_model = ThresholdOptimizer(
-            #     estimator=best_clf,
-            #     constraints=self.hardt_model_default_constraint,
-            #     objective=self.hardt_model_default_objective,
-            #     prefit=True,
-            #     predict_method='predict_proba'
-            # )
-            # hardt_model.fit(X_train, y_train, sensitive_features=X_train['RAC1P'])
+            hardt_model = ThresholdOptimizer(
+                estimator=best_clf,
+                constraints=self.hardt_model_default_constraint,
+                objective=self.hardt_model_default_objective,
+                prefit=True,
+                predict_method='predict_proba'
+            )
+            hardt_model.fit(X_train, y_train, sensitive_features=X_train['RAC1P'])
 
-            # self.evaluate_classifier(hardt_model, dataset, clf_name, best_params, 'hardt', dataset_name, X_test, y_test, A_test, y_prob=y_prob_test)
+            self.evaluate_classifier(hardt_model, dataset, clf_name, best_params, 'hardt', dataset_name, X_test, y_test, A_test, y_prob=y_prob_test, best_clf=best_clf)
 
             for l in self.lambdas:
                 if 'mfopt' in dataset_name:
@@ -182,6 +183,8 @@ class FairPipeline:
         # NOTE: best_clf and classifier are the same classifier, this is just semantic
         if method == 'fair':
             y_prob = best_clf.predict_proba(X)[:, 1]
+        elif method == 'hardt':
+            y_prob = best_clf.predict_proba(X)[:, 1]
         else:
             y_prob = classifier.predict_proba(X)[:, 1]
 
@@ -189,6 +192,8 @@ class FairPipeline:
 
         if method == 'fair':
             y_pred = classifier.predict(y_prob, A)
+        elif method == 'hardt':
+            y_pred = classifier.predict(X, sensitive_features=A)
         else:
             y_pred = classifier.predict(X)
 
