@@ -54,7 +54,7 @@ class FairDataset:
         return self.dataframe, self.target, self.sensitive_attrs
     
 class FairPipeline:
-    def __init__(self, classifiers, classifier_config_path, metrics, metric_functions, global_metric=f1, lambdas=[2.0, 2.1, 2.2, 2.3, 2.4, 2.5, 2.6, 2.7, 2.8, 2.9, 3.0], max_error=0.02, max_total_combinations=1000, random_state=42, calibrate=False):
+    def __init__(self, classifiers, classifier_config_path, metrics, metric_functions, global_metric=f1, lambdas=[0.1,1.0,10.0], max_error=0.02, max_total_combinations=1000, random_state=42, calibrate=False):
         self.classifiers = classifiers
         self.metrics = metrics
         self.metric_functions = metric_functions

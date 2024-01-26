@@ -76,6 +76,7 @@ CONFIG_PATH = 'configs/master_config.yml'
 config = load_config(CONFIG_PATH)
 datasets = config['datasets']
 datasets_settings = config['datasets_settings']
+lambda_settings = config['lambda_settings']
 classifier_config_path = 'configs/classifier_config.yml'
 
 DATASET_NAME = args.dataset_name
@@ -92,6 +93,7 @@ if __name__ == '__main__':
     if DATASET_NAME in datasets:
         sensitive_attrs = datasets[DATASET_NAME]
         global_metric_setting = datasets_settings[DATASET_NAME][0]
+        lambda_list = lambda_settings[DATASET_NAME]
 
         print(f"Running pipeline for dataset: {DATASET_NAME}")
         if DATASET_NAME in ('ACSEmployment','ACSIncome','ACSMobility','ACSPublicCoverage','ACSTravelTime'):
@@ -113,6 +115,7 @@ if __name__ == '__main__':
                                     metrics=metrics_dict,
                                     metric_functions=metrics_functions,
                                     global_metric=global_metrics_map[global_metric_setting],
+                                    lambdas=lambda_list,
                                     max_error=0.01, max_total_combinations=50000)
 
             pipeline.tune_and_evaluate(dataset, DATASET_NAME, sensitive_attr)
