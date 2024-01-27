@@ -143,7 +143,7 @@ class FairPipeline:
                 prefit=True,
                 predict_method='predict_proba'
             )
-            hardt_model.fit(X_train, y_train, sensitive_features=X_train['RAC1P'])
+            hardt_model.fit(X_train, y_train, sensitive_features=A_train)
 
             self.evaluate_classifier(hardt_model, dataset, clf_name, best_params, 'hardt', dataset_name, X_test, y_test, A_test, y_prob=y_prob_test, best_clf=best_clf)
 
