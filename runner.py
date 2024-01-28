@@ -49,7 +49,7 @@ metrics_functions = {
     'tpr': tpr,
     'fpr': fpr,
     'precision': precision,
-    'npv': npv,
+    # 'npv': npv,
     'selection_rate': selection_rate
 }
 
@@ -96,12 +96,12 @@ if __name__ == '__main__':
         lambda_list = lambda_settings[DATASET_NAME]
 
         print(f"Running pipeline for dataset: {DATASET_NAME}")
-        # if DATASET_NAME in ('ACSEmployment','ACSIncome','ACSMobility','ACSPublicCoverage','ACSTravelTime'):
-        #     X = pd.read_csv(f'matrices/{DATASET_NAME}/Xs.csv')
-        #     y = pd.read_csv(f'matrices/{DATASET_NAME}/ys.csv').squeeze()
-        # else:
-        X = pd.read_csv(f'matrices/{DATASET_NAME}/X.csv')
-        y = pd.read_csv(f'matrices/{DATASET_NAME}/y.csv').squeeze()
+        if DATASET_NAME in ('ACSPoverty_mfopt','ACSInsurance_mfopt','ACSPublicCoverage_mfopt','ACSEmployment','ACSIncome','ACSMobility','ACSPublicCoverage','ACSTravelTime'):
+            X = pd.read_csv(f'matrices/{DATASET_NAME}/Xs.csv')
+            y = pd.read_csv(f'matrices/{DATASET_NAME}/ys.csv').squeeze()
+        else:
+            X = pd.read_csv(f'matrices/{DATASET_NAME}/X.csv')
+            y = pd.read_csv(f'matrices/{DATASET_NAME}/y.csv').squeeze()
 
         # remove any rows that have null or nan
         X.dropna(inplace=True)
@@ -116,7 +116,7 @@ if __name__ == '__main__':
                                     metric_functions=metrics_functions,
                                     global_metric=global_metrics_map[global_metric_setting],
                                     lambdas=lambda_list,
-                                    max_error=0.01, max_total_combinations=50000)
+                                    max_error=0.005, max_total_combinations=100000)
 
             pipeline.tune_and_evaluate(dataset, DATASET_NAME, sensitive_attr)
             results = pipeline.results_df
