@@ -10,11 +10,13 @@ from fairlearn.postprocessing import ThresholdOptimizer
 from sklearn.metrics import roc_auc_score, f1_score
 from metrics import tpr, fpr, precision, npv, accuracy, f1, selection_rate
 
+
 # DELETE
 from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestClassifier
 
 from approx_thresh_light import ApproxThresholdNet, ApproxThresholdGeneral
+from approx_thresh_pytorch_light import ApproxThresholdPytorch
 
 from tqdm import tqdm
 
@@ -62,7 +64,8 @@ class FairPipeline:
                        random_state=42, 
                        calibrate=False,
                        hardt_model_default_constraint='selection_rate_parity',
-                       hardt_model_default_objective='balanced_accuracy_score',):
+                       hardt_model_default_objective='balanced_accuracy_score',
+                       approx_thresh_type='net'):
         self.classifiers = classifiers
         self.metrics = metrics
         self.metric_functions = metric_functions
@@ -77,6 +80,7 @@ class FairPipeline:
         self.global_metric = global_metric
         self.hardt_model_default_constraint = hardt_model_default_constraint
         self.hardt_model_default_objective = hardt_model_default_objective
+        self.approx_thresh_type = approx_thresh_type
 
     def load_param_grids(self, config_path):
         with open(config_path, 'r') as file:
@@ -148,14 +152,20 @@ class FairPipeline:
             self.evaluate_classifier(hardt_model, dataset, clf_name, best_params, 'hardt', dataset_name, X_test, y_test, A_test, y_prob=y_prob_test, best_clf=best_clf)
 
             for l in self.lambdas:
+                if self.approx_thresh_type == 'net':
+                    ApproxClass = ApproxThresholdNet
+                elif self.approx_thresh_type == 'general':
+                    ApproxClass = ApproxThresholdGeneral
+                elif self.approx_thresh_type == 'torch':
+                    ApproxClass = ApproxThresholdPytorch
                 if 'mfopt' in dataset_name:
-                    fair_clf = ApproxThresholdNet(metric_functions=self.metric_functions, 
+                    fair_clf = ApproxClass(metric_functions=self.metric_functions, 
                                                     lambda_=l, 
                                                     max_error=0.001, 
                                                     max_total_combinations=self.max_total_combinations,
                                                     global_metric=self.global_metric)
                 else:
-                    fair_clf = ApproxThresholdNet(metric_functions=self.metric_functions, 
+                    fair_clf = ApproxClass(metric_functions=self.metric_functions, 
                                                     lambda_=l, 
                                                     max_error=self.max_error, 
                                                     max_total_combinations=self.max_total_combinations,
@@ -163,8 +173,9 @@ class FairPipeline:
 
                 fair_clf.fit(y_prob_train, y_train, A_train)
                 
-                if self.overall_max_error < fair_clf.max_error:
-                    self.overall_max_error = fair_clf.max_error
+                if self.approx_thresh_type == 'net':
+                    if self.overall_max_error < fair_clf.max_error:
+                        self.overall_max_error = fair_clf.max_error
 
                 fair_clf_info = {
                     'best_objective_value': fair_clf.best_objective_value,
