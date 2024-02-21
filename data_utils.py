@@ -1,5 +1,7 @@
 import numpy as np
 import pandas as pd
+import os
+
 
 from sklearn.metrics import f1_score 
 import sklearn.metrics as skm
@@ -7,30 +9,6 @@ from sklearn.metrics import classification_report
 from sklearn.metrics import accuracy_score
 from sklearn.model_selection import train_test_split
 from acs_helper import ACSData
-
-def prep_real(real, verbose=False):
-    X = real.iloc[:, :-1]
-    y = real.iloc[:, -1]
-    _, x_test, _, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-    return x_test, y_test
-
-def prep_real_with_model(real, model, verbose=False):
-    X = real.iloc[:, :-1]
-    y = real.iloc[:, -1]
-    x_train, x_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-    model_real = model() #(max_iter=1000)
-    model_real.fit(x_train, y_train)
-
-    #Test the model
-    predictions = model_real.predict(x_test)
-    f1 = f1_score(y_test, predictions)
-    if verbose:
-        print()
-        print('Trained on Real Data')
-        print(classification_report(y_test, predictions))
-        print('Accuracy real: ' + str(accuracy_score(y_test, predictions)))
-        print(f1)
-    return x_test, y_test, f1
 
 def get_scenario(scenario):
     if "ACSEmployment" == scenario:
@@ -86,17 +64,8 @@ def get_public(state="NY"):
     acs = ACSData(states=[state])
     return acs.acs_data
 
-def calculate_dimensionality(df):
-    dimensionality = 1
-    for col in df.columns:
-        unique_values = df[col].nunique()
-        dimensionality *= unique_values
-    return dimensionality
-
-def force_data_categorical_to_numeric(df, cat_columns=[]):
-    # convert columns to categorical if they are not already
-    for col in cat_columns:
-        if col in df.columns:
-            df[col] = df[col].astype('category')
-            df[col] = df[col].cat.codes
-    return df
+def concat_results(directory="results", output_file="all_results.pkl"):
+    pkl_files = [file for file in os.listdir(directory) if file.endswith('.pkl')]
+    df_list = [pd.read_pickle(os.path.join(directory, file)) for file in pkl_files]
+    big_dataframe = pd.concat(df_list, ignore_index=True)
+    big_dataframe.to_pickle(directory + '/' + output_file)

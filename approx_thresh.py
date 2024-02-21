@@ -1,435 +1,300 @@
 import numpy as np
-import matplotlib.pyplot as plt
-import plotly.graph_objects as go
-
 from scipy.spatial.distance import cdist
-
 from sklearn.base import BaseEstimator, ClassifierMixin
-from sklearn.metrics import roc_curve, auc, precision_recall_curve, accuracy_score, f1_score, precision_score, recall_score
+
+from itertools import product
+from math import ceil
+from tqdm import tqdm
+from concurrent.futures import ProcessPoolExecutor, as_completed
+
+from metrics import f1
+
+MAX_WORKERS=4
 
 class ApproxThreshold(BaseEstimator, ClassifierMixin):
-    """
-    ApproxThreshold is a classifier that adjusts the decision threshold of a base classifier
-    to equalize a number of fairness constraints while optimizing for a global metric.
-
-    Parameters
-    ----------
-    base_model : object
-        A base classifier that implements the scikit-learn estimator interface.
-        Must have a predict_proba method.
-    
-    lambda_ : float, default=0.5
-        A parameter that controls the trade-off between a focus on fairness and on global metric.
-    """
-    def __init__(self, base_model, lambda_=0.5, flag='global_objective'):
-        self.base_model = base_model
+    def __init__(self, metric_functions, lambda_=0.5, global_metric=f1, max_epsilon=1.0):
+        self.metric_functions = metric_functions  # list of metric functions
         self.lambda_ = lambda_
         self.thresholds_ = None
-        self.flag = flag
+        self.epsilons_ = None
+        self.global_metric = global_metric
+        self.max_epsilon = max_epsilon
+        self.best_objective_value = None
+        self.y_prob = None
+        self.resource_constraint = None
 
-    def fit(self, X, y, A):
+    def fit(self, y_prob, y, A):
         """
-        This method fits the model to the data:
-        - First, it fits the base model to the data.
-        - Then, it computes the ROC and precision curves for each class.
-        - Finally, it finds the intersection of the two curves that minimizes the distance between them,
-        controlled by the lambda_ parameter.
+        Assumes a prefit model, so just finds the best threshold combination
 
-        Parameters
-        ----------
-        X : array-like of shape (n_samples, n_features)
-            The training input samples.
-
-        y : array-like of shape (n_samples,)
-            The target values.
-        
-        A : array-like of shape (n_samples,)
-            The protected attribute values.
-
-        Returns
-        -------
-        self : object
-            Returns self.
+        :param y_prob: predicted probabilities
+        :param y: true labels
+        :param A: group labels
         """
-
-        self.base_model.fit(X, y)
-        y_prob = self.base_model.predict_proba(X)[:, 1]
-        mask_class1 = A == 1
-        mask_class2 = A == 2
-        self.fpr1_, self.tpr1_, self.precision1_, self.thresholds1_, self.roc_auc1_ = self._compute_roc_and_precision(y[mask_class1], y_prob[mask_class1])
-        self.fpr2_, self.tpr2_, self.precision2_, self.thresholds2_, self.roc_auc2_ = self._compute_roc_and_precision(y[mask_class2], y_prob[mask_class2])
+        self.group_metrics = {}
+        self.group_thresholds = {}
+        unique_groups = np.unique(A)
         
-        # Check whether to use brute force or cdist
-        if 'global_objective' in self.flag:
-            self.thresholds_ = self._find_intersection(self.fpr1_, 
-                                                    self.tpr1_, 
-                                                    self.precision1_, 
-                                                    self.thresholds1_, 
-                                                    self.fpr2_, 
-                                                    self.tpr2_, 
-                                                    self.precision2_, 
-                                                    self.thresholds2_, 
-                                                    y, y_prob, 
-                                                    mask_class1, 
-                                                    mask_class2, 
-                                                    lambda_=self.lambda_)
-        else:
-            self.thresholds_ = self._find_intersection_just_thresholds(self.fpr1_,
-                                                                    self.tpr1_,
-                                                                    self.precision1_,
-                                                                    self.thresholds1_,
-                                                                    self.fpr2_,
-                                                                    self.tpr2_,
-                                                                    self.precision2_,
-                                                                    self.thresholds2_)
-        
+        self.thresholds_, self.epsilons_ = self._find_intersection(y, y_prob, A, unique_groups, self.metric_functions, lambda_=self.lambda_)
         return self
 
-    def predict(self, X, A):
+    def predict(self, y_prob, A):
         """
-        This method predicts the class labels for the provided data.
-        First, it computes the predicted probabilities for each class.
-        Then, it adjusts the decision threshold for each class according to the thresholds found in the fit method.
-        Finally, it returns the adjusted class labels.
-
-        Parameters
-        ----------
-        X : array-like of shape (n_samples, n_features)
-            The input samples.
+        Again, assumes a prefit model, so just adjusts the labels based on the fit thresholds
         
-        A : array-like of shape (n_samples,)
-            The protected attribute values.
+        :param y_prob: predicted probabilities
+        :param A: group labels
 
-        Returns
-        -------
-        y : ndarray of shape (n_samples,)
-            The predicted class labels.
+        :return: adjusted labels
         """
-
-        y_prob = self.base_model.predict_proba(X)[:, 1]
-        mask_class1 = A == 1
-        mask_class2 = A == 2
-        adjusted_labels1 = np.where(y_prob[mask_class1] > self.thresholds_[0], 1, 0)
-        adjusted_labels2 = np.where(y_prob[mask_class2] > self.thresholds_[1], 1, 0)
         adjusted_labels = np.zeros(A.shape)
-        adjusted_labels[mask_class1] = adjusted_labels1
-        adjusted_labels[mask_class2] = adjusted_labels2
+
+        unique_groups = np.unique(A)
+        for group in unique_groups:
+            mask = A == group
+            adjusted_labels[mask] = np.where(y_prob[mask] > self.thresholds_[group], 1, 0)
         
         return adjusted_labels
-        
-    def _compute_roc_and_precision(self, y_true, y_prob):
+
+    def _compute_metrics(self, y_true, y_prob, threshold):
         """
-        This method computes the ROC and precision curves for a given class.
-        First it computes the ROC and precision curves.
-        Then, it interpolates the precision curve at the points of the ROC curve.
-        Finally, it computes the area under the ROC curve.
+        Convenience function to compute all metrics for a given threshold
 
-        Parameters
-        ----------
-        y_true : array-like of shape (n_samples,)
-            The target values.
-        
-        y_prob : array-like of shape (n_samples,)
+        :param y_true: true labels
+        :param y_prob: predicted probabilities
+        :param threshold: threshold for binary classification
 
-        Returns
-        -------
-        fpr : ndarray of shape (n_thresholds + 1,)
-            False Positive Rates.
-        
-        tpr : ndarray of shape (n_thresholds + 1,)
-            True Positive Rates.
-
-        precision_interp : ndarray of shape (n_thresholds + 1,)
-            Precision values interpolated at the points of the ROC curve.
-
-        thresholds : ndarray of shape (n_thresholds,)
-            Threshold values.
-
-        roc_auc : float
-            Area under the ROC curve.
+        :return: dictionary of metric_name: metric_value
         """
+        metrics = {}
+        for metric_name, metric_func in self.metric_functions.items():
+                metrics[metric_name] = metric_func(y_true, y_prob, threshold)
+        return metrics
 
-        fpr, tpr, thresholds = roc_curve(y_true, y_prob)
-        precision, recall, _ = precision_recall_curve(y_true, y_prob)
-        precision_interp = np.interp(tpr, recall[::-1], precision[::-1])
-        return fpr, tpr, precision_interp, thresholds, auc(fpr, tpr)
+    def _compute_all_thresholds_per_group(self, y_prob, unique_groups, A):
+        group_thresholds = {}
+        for group in unique_groups:
+            mask_group = A == group
+            group_thresholds[group] = np.unique(y_prob[mask_group])
+        return np.array(np.meshgrid(*group_thresholds.values())).T.reshape(-1, len(unique_groups))
 
-    def _find_intersection_just_thresholds(self, fpr1, tpr1, precision1, thresholds1, fpr2, tpr2, precision2, thresholds2):
+    def _objective_function(self, 
+                            threshold_combination, 
+                            y_true, 
+                            y_prob, 
+                            A, 
+                            unique_groups, 
+                            metrics_functions, 
+                            lambda_):
+        combined_preds = []
+        combined_true = []
+        objective = 0
+        temp_group_metrics = {}
+        total_size = 0
+        weighted_acc = 0
+        max_epsilon_violation = False
+
+        for i, group in enumerate(unique_groups):
+            mask_group = A == group
+            temp_group_metrics[group] = self._compute_metrics(y_true[mask_group], y_prob[mask_group], threshold_combination[i])
+
+            adjusted_labels = y_prob[mask_group] > threshold_combination[i]
+            combined_preds.extend(adjusted_labels)
+            combined_true.extend(y_true[mask_group])
+
+            group_acc = self.global_metric(y_true[mask_group], y_prob[mask_group], threshold_combination[i])
+            group_size = len(y_true[mask_group])
+            weighted_acc += group_acc * group_size
+            total_size += group_size
+
+        weighted_acc /= total_size
+
+        temp_epsilons = {}
+        for i, group in enumerate(unique_groups):
+            temp_epsilons[group] = {}
+            group_metric_vector = np.array([temp_group_metrics[group][metric_name] for metric_name in metrics_functions.keys()])
+
+            for other_group in unique_groups:
+                if group != other_group:
+                    other_group_metric_vector = np.array([temp_group_metrics[other_group][metric_name] for metric_name in metrics_functions.keys()])
+                    distances = cdist(group_metric_vector.reshape(1, -1), other_group_metric_vector.reshape(1, -1), metric='euclidean')
+                    objective += np.sum(distances)
+
+                    # Check for max epsilon violation
+                    epsilon_diff = np.abs(group_metric_vector - other_group_metric_vector)
+                    if np.any(epsilon_diff > self.max_epsilon):
+                        max_epsilon_violation = True
+                    temp_epsilons[group][other_group] = epsilon_diff
+
+        objective += lambda_ * (1 - weighted_acc)
+
+        if self.resource_constraint is not None and sum(combined_preds) > self.resource_constraint:
+            return np.inf, temp_epsilons, max_epsilon_violation
+
+        return objective, temp_epsilons, max_epsilon_violation
+
+class ApproxThresholdBrute(ApproxThreshold):
+    def __init__(self, metric_functions, lambda_=0.5, global_metric=f1, max_epsilon=1.0, max_error=0, max_total_combinations=1):
+        super().__init__(metric_functions, lambda_=lambda_, global_metric=global_metric, max_epsilon=max_epsilon)
+        self.metric_functions = metric_functions  # list of metric functions
+        self.lambda_ = lambda_
+        self.thresholds_ = None
+        self.epsilons_ = None
+        self.global_metric = global_metric
+        self.max_epsilon = max_epsilon
+        self.best_objective_value = None
+        self.y_prob = None
+
+
+    def _find_intersection(self, 
+                           y_true,
+                           y_prob, 
+                           A, 
+                           unique_groups, 
+                           metrics_functions, 
+                           lambda_=0.5, 
+                           resource_constraint=None):
         """
-        This method finds the intersection of two curves by minimizing the distance between them.
-        It returns the thresholds that correspond to the intersection point, as well as the distances between the curves at that point.
-        First, it computes the distances between all points of the two curves.
-        Then, it finds the indices of the points that minimize the distance between the curves.
-        Finally, it returns the thresholds that correspond to those indices, as well as the distances between the curves at that point.
+        Brute force method to find the best threshold combination.
 
-        Parameters
-        ----------
-        fpr1 : ndarray of shape (n_thresholds + 1,)
-            False Positive Rates for class 1.
+        :param y_true: true labels
+        :param y_prob: predicted probabilities
+        :param A: group labels vector
+        :param unique_groups: unique group labels
+        :param metrics_functions: dictionary of metric_name: metric_function
+        :param lambda_: global utility parameter
+        :param resource_constraint: maximum number of positive predictions allowed
 
-        tpr1 : ndarray of shape (n_thresholds + 1,)
-            True Positive Rates for class 1.
-
-        precision1 : ndarray of shape (n_thresholds + 1,)
-            Precision values for class 1.
-
-        thresholds1 : ndarray of shape (n_thresholds,)
-            Threshold values for class 1.
-
-        fpr2 : ndarray of shape (n_thresholds + 1,)
-            False Positive Rates for class 2.
-
-        tpr2 : ndarray of shape (n_thresholds + 1,)
-            True Positive Rates for class 2.
-        
-        precision2 : ndarray of shape (n_thresholds + 1,)
-            Precision values for class 2.
-        
-        thresholds2 : ndarray of shape (n_thresholds,)
-            Threshold values for class 2.
-
-        Returns
-        -------
-        threshold1 : float
-            Threshold for class 1 that corresponds to the intersection point.
-
-        threshold2 : float
-            Threshold for class 2 that corresponds to the intersection point.
-
-        epsilon_fpr : float
-            Distance between the two curves at the intersection point.
-        
-        epsilon_tpr : float
-            Distance between the two curves at the intersection point.
-
-        epsilon_precision : float
-            Distance between the two curves at the intersection point.
+        :return: best thresholds, best epsilons
         """
-
-        points1 = np.vstack([fpr1, tpr1, precision1]).T
-        points2 = np.vstack([fpr2, tpr2, precision2]).T
-        distances = cdist(points1, points2, metric='euclidean')
-        i, j = np.unravel_index(distances.argmin(), distances.shape)
-        epsilon_fpr = np.abs(fpr1[i] - fpr2[j])
-        epsilon_tpr = np.abs(tpr1[i] - tpr2[j])
-        epsilon_precision = np.abs(precision1[i] - precision2[j])
-        return thresholds1[i], thresholds2[j], epsilon_fpr, epsilon_tpr, epsilon_precision
-
-    def _find_intersection(self, fpr1, tpr1, precision1, thresholds1, fpr2, tpr2, precision2, thresholds2, y_true, y_prob, mask_class1, mask_class2, lambda_=0.5):
-        """
-        This method finds the intersection of two curves by minimizing the distance between them.
-        It returns the thresholds that correspond to the intersection point, as well as the distances between the curves at that point.
-        First, it computes the distances between all points of the two curves.
-        Then, it finds the indices of the points that minimize the distance between the curves.
-        It checks the objective function at those points - lambda_ is used to control the trade-off between fairness and global metric.
-        Finally, it returns the thresholds that correspond to those indices, as well as the distances between the curves at that point.
-
-        Parameters
-        ----------
-        fpr1 : ndarray of shape (n_thresholds + 1,)
-            False Positive Rates for class 1.
-
-        tpr1 : ndarray of shape (n_thresholds + 1,)
-            True Positive Rates for class 1.
-
-        precision1 : ndarray of shape (n_thresholds + 1,)
-            Precision values for class 1.
-
-        thresholds1 : ndarray of shape (n_thresholds,)
-            Threshold values for class 1.
-
-        fpr2 : ndarray of shape (n_thresholds + 1,)
-            False Positive Rates for class 2.
-
-        tpr2 : ndarray of shape (n_thresholds + 1,)
-            True Positive Rates for class 2.
-        
-        precision2 : ndarray of shape (n_thresholds + 1,)
-            Precision values for class 2.
-        
-        thresholds2 : ndarray of shape (n_thresholds,)
-            Threshold values for class 2.
-
-        Returns
-        -------
-        threshold1 : float
-            Threshold for class 1 that corresponds to the intersection point.
-
-        threshold2 : float
-            Threshold for class 2 that corresponds to the intersection point.
-
-        epsilon_fpr : float
-            Distance between the two curves at the intersection point.
-        
-        epsilon_tpr : float
-            Distance between the two curves at the intersection point.
-
-        epsilon_precision : float
-            Distance between the two curves at the intersection point.
-        """
-        points1 = np.vstack([fpr1, tpr1, precision1]).T
-        points2 = np.vstack([fpr2, tpr2, precision2]).T
-        distances = cdist(points1, points2, metric='euclidean')
         best_objective_value = float('inf')
-        best_indices = (0, 0)
+        best_thresholds = {}
+        best_epsilons = {}
+        all_threshold_combinations = self._compute_all_thresholds_per_group(y_prob, unique_groups, A)
 
-        for i in range(len(thresholds1)):
-            for j in range(len(thresholds2)):
-                adjusted_labels1 = y_prob[mask_class1] > thresholds1[i]
-                adjusted_labels2 = y_prob[mask_class2] > thresholds2[j]
-                combined_preds = np.concatenate([adjusted_labels1, adjusted_labels2])
-                combined_true = np.concatenate([y_true[mask_class1], y_true[mask_class2]])
+        for group in unique_groups:
+            self.group_metrics[group] = {}
+
+        for idx, threshold_combination in enumerate(tqdm(all_threshold_combinations, desc="Processing combinations")):
+            objective, temp_epsilons, max_epsilon_violation = self._objective_function(threshold_combination, 
+                                                                                       y_true, 
+                                                                                       y_prob, 
+                                                                                       A, 
+                                                                                       unique_groups, 
+                                                                                       metrics_functions, 
+                                                                                       lambda_)
+
+            if not max_epsilon_violation and objective < best_objective_value:
+                best_objective_value = objective
+                best_thresholds = dict(zip(unique_groups, threshold_combination))
+                best_epsilons = temp_epsilons
+                self.best_index = idx
+
+        print(f'Best objective value: {best_objective_value}')
+        print(f'Best thresholds: {best_thresholds}')
+        print(f'Epsilon differences: {best_epsilons}')
+        self.best_objective_value = best_objective_value
+        return best_thresholds, best_epsilons
+
+
+class ApproxThresholdNet(ApproxThreshold):
+    """
+    Here, we use an epsilon net to find the best threshold combination. 
+    This is a more efficient method than the previous one, 
+    and is guaranteed to find a solution within some error margin to the optimal,
+    assuming the metric functions are Lipschitz continuous with constant less than or
+    equal to 1. Then, an overall Lipschitz constant of the objective function is 
+    less than or equal to 2 * sqrt(2) * |G| * |M| + lambda, where |G| is the number 
+    of groups and |M| is the number of metric functions.
+    See derivation in the paper.
+
+    This provides a more efficient method for finding the best threshold combination,
+    because the number of points in the epsilon net is only dependent on the error margin
+    and a Lipschitz constant of the objective function, which is much smaller than the
+    number of points in the data.
+
+    However, the metric functions are also assumed to be 1-Lipschitz continuous, which
+    is not always the case. The "soft" or smoothed versions of the metric functions
+    are (likely) 1-Lipschitz continuous, but the original metric functions are not.
+    So, though principled, this method is still heuristic.
+    """
+    def __init__(self, metric_functions, lambda_=0.5, global_metric=f1, max_epsilon=1.0, max_error=0.01, L_f=None, max_total_combinations=100000):
+        super().__init__(metric_functions, lambda_=lambda_, global_metric=global_metric, max_epsilon=max_epsilon)
+        self.max_error = max_error
+        self.L_f = L_f
+        self.max_total_combinations = max_total_combinations
+
+    def evaluate_combination(self, threshold_combination, y_true, y_prob, A, unique_groups, metrics_functions, lambda_):
+        objective, temp_epsilons, max_epsilon_violation = self._objective_function(threshold_combination, 
+                                                                                       y_true, 
+                                                                                       y_prob, 
+                                                                                       A, 
+                                                                                       unique_groups, 
+                                                                                       metrics_functions, 
+                                                                                       lambda_)
+
+        return objective, threshold_combination, temp_epsilons, max_epsilon_violation
+
+    def _find_intersection(self, y_true, y_prob, A, unique_groups, metrics_functions, lambda_=0.5):
+        binom_metric_funcs = len(metrics_functions) * (len(metrics_functions) - 1) / 2
+
+        # NOTE: this is often theoretically 1/n, but we conservatively use 1/log(n)
+        lipschitz_constant_g_i = 2 * (1 / np.log(len(y_true)))
+
+        if self.L_f is None:
+            self.L_f = lipschitz_constant_g_i * len(unique_groups) * binom_metric_funcs + lambda_
+
+        range_f = len(unique_groups) * binom_metric_funcs + lambda_
+
+        max_error = self.max_error
+        epsilon = max_error * range_f / self.L_f
+        N = ceil(1 / epsilon) + 1
+        total_combinations = N ** len(unique_groups)
+
+        # adjust max_error if total_combinations exceeds max_total_combinations
+        if total_combinations > self.max_total_combinations:
+            N = ceil((self.max_total_combinations ** (1/len(unique_groups)))) + 1
+            epsilon = 1 / (N - 1)
+            max_error = epsilon * self.L_f / range_f
+            total_combinations = N ** len(unique_groups)
+            print(f"Adjusted max_error to {max_error} to limit total combinations to approximately {self.max_total_combinations}")
+            self.max_error = max_error
+            
+        print(f'Number of points in the epsilon net: {N}')
+        print(f'Adjusted max_error: {max_error}')
+        print(f'Number of points in data: {len(y_true)}')
+
+        threshold_points = np.linspace(0, 1, N)
+        objectives = {}
+        epsilons = {}
+
+        # best_epsilons = {}
+        combos = list(product(threshold_points, repeat=len(unique_groups)))
+        with ProcessPoolExecutor(max_workers=MAX_WORKERS) as executor:
+            # , mp_context=mp.get_context('fork')
+            print(executor._mp_context)
+            print('Enters pool')
+            future_to_combination = {executor.submit(self.evaluate_combination, tc, y_true, y_prob, A, unique_groups, metrics_functions, lambda_): tc for tc in combos}
+            print('Submits futures')
+            for future in tqdm(as_completed(future_to_combination), total=total_combinations, desc="Threshold Combinations"):
+                threshold_combination = future_to_combination[future]
+                objective_value, _, temp_epsilons, max_epsilon_violation = future.result()
                 
-                group1_size = len(adjusted_labels1)
-                group2_size = len(adjusted_labels2)
-                total_size = group1_size + group2_size
-                acc_group1 = accuracy_score(combined_true[:group1_size], combined_preds[:group1_size])
-                acc_group2 = accuracy_score(combined_true[group1_size:], combined_preds[group1_size:])
-                acc = (acc_group1 * group1_size + acc_group2 * group2_size) / total_size
+                if not max_epsilon_violation:
+                    objectives[threshold_combination] = objective_value
+                    epsilons[threshold_combination] = temp_epsilons
 
-                objective = distances[i, j] + lambda_ * (1 - acc)
-                if objective < best_objective_value:
-                    best_objective_value = objective
-                    best_indices = (i, j)
-                        
-        i, j = best_indices
-        epsilon_fpr = np.abs(fpr1[i] - fpr2[j])
-        epsilon_tpr = np.abs(tpr1[i] - tpr2[j])
-        epsilon_precision = np.abs(precision1[i] - precision2[j])
-        return thresholds1[i], thresholds2[j], epsilon_fpr, epsilon_tpr, epsilon_precision
+            executor.shutdown(wait=True)
 
-    def plot_matplotlib(self):
-        """
-        This method plots the ROC and precision curves for each class.
-        It also plots the intersection point of the two curves.
-        """
-        fig = plt.figure(figsize=(10, 8))
-        ax = fig.add_subplot(111, projection='3d')
+        # find the best objective value and corresponding thresholds after collecting all results
+        best_threshold_combination = min(objectives, key=objectives.get)
+        best_objective_value = objectives[best_threshold_combination]
+        best_epsilons = epsilons[best_threshold_combination]
+        best_thresholds = dict(zip(unique_groups, best_threshold_combination))
 
-        ax.plot(self.fpr1_, self.tpr1_, self.precision1_, label=f'Class 1 ROC (area = {self.roc_auc1_:.2f})', color='blue')
-        ax.plot(self.fpr2_, self.tpr2_, self.precision2_, label=f'Class 2 ROC (area = {self.roc_auc2_:.2f})', color='orange')
-        
-        ax.scatter(self.fpr1_[np.argwhere(self.thresholds1_ == self.thresholds_[0])[0]],
-                self.tpr1_[np.argwhere(self.thresholds1_ == self.thresholds_[0])[0]],
-                self.precision1_[np.argwhere(self.thresholds1_ == self.thresholds_[0])[0]], c='blue', s=100, marker='o')
-
-        ax.scatter(self.fpr2_[np.argwhere(self.thresholds2_ == self.thresholds_[1])[0]],
-                self.tpr2_[np.argwhere(self.thresholds2_ == self.thresholds_[1])[0]],
-                self.precision2_[np.argwhere(self.thresholds2_ == self.thresholds_[1])[0]], c='orange', s=100, marker='o')
-
-        ax.set_xlabel('False Positive Rate')
-        ax.set_ylabel('True Positive Rate')
-        ax.set_zlabel('Precision')
-        ax.set_title('3D ROC-Precision curve')
-        ax.legend()
-        plt.show()
-
-    def plot_plotly(self):
-        """
-        This method plots the ROC and precision curves for each class.
-        It also plots the intersection point of the two curves.
-        It uses the plotly library.
-        """
-        fig = go.Figure()
-
-        fig.add_trace(go.Scatter3d(x=self.fpr1_, y=self.tpr1_, z=self.precision1_, 
-                                mode='lines+markers', 
-                                name=f'Class 1 ROC (area = {self.roc_auc1_:.2f})',
-                                line=dict(color='blue'),
-                                marker=dict(size=[10 if th == self.thresholds_[0] else 2 for th in self.thresholds1_])))
-
-        fig.add_trace(go.Scatter3d(x=self.fpr2_, y=self.tpr2_, z=self.precision2_, 
-                                mode='lines+markers', 
-                                name=f'Class 2 ROC (area = {self.roc_auc2_:.2f})',
-                                line=dict(color='orange'),
-                                marker=dict(size=[10 if th == self.thresholds_[1] else 2 for th in self.thresholds2_])))
-
-        midpoint = [(self.fpr1_[np.argwhere(self.thresholds1_ == self.thresholds_[0])[0][0]] + \
-                     self.fpr2_[np.argwhere(self.thresholds2_ == self.thresholds_[1])[0][0]]) / 2,
-                    (self.tpr1_[np.argwhere(self.thresholds1_ == self.thresholds_[0])[0][0]] + \
-                     self.tpr2_[np.argwhere(self.thresholds2_ == self.thresholds_[1])[0][0]]) / 2,
-                    (self.precision1_[np.argwhere(self.thresholds1_ == self.thresholds_[0])[0][0]] + \
-                     self.precision2_[np.argwhere(self.thresholds2_ == self.thresholds_[1])[0][0]]) / 2]
-
-        fig.add_trace(go.Scatter3d(x=[self.fpr1_[np.argwhere(self.thresholds1_ == self.thresholds_[0])[0][0]], \
-                                      self.fpr2_[np.argwhere(self.thresholds2_ == self.thresholds_[1])[0][0]]],
-                                y=[self.tpr1_[np.argwhere(self.thresholds1_ == self.thresholds_[0])[0][0]], \
-                                   self.tpr2_[np.argwhere(self.thresholds2_ == self.thresholds_[1])[0][0]]],
-                                z=[self.precision1_[np.argwhere(self.thresholds1_ == self.thresholds_[0])[0][0]], \
-                                   self.precision2_[np.argwhere(self.thresholds2_ == self.thresholds_[1])[0][0]]],
-                                mode='lines',
-                                line=dict(color='red'),
-                                showlegend=False))
-
-        annotation_text = f'ΔFPR={self.thresholds_[2]:.2f}<br>ΔTPR={self.thresholds_[3]:.2f}<br>ΔPrecision={self.thresholds_[4]:.2f}'
-
-        fig.add_trace(go.Scatter3d(x=[midpoint[0]], y=[midpoint[1]], z=[midpoint[2]],
-                                mode='text',
-                                text=[annotation_text],
-                                textposition="bottom center",
-                                showlegend=False))
-
-        fig.update_layout(scene=dict(
-                xaxis_title='False Positive Rate',
-                yaxis_title='True Positive Rate',
-                zaxis_title='Precision'),
-            margin=dict(r=20, b=10, l=10, t=10))
-
-        fig.show()
+        print(f'Best objective value: {best_objective_value}')
+        print(f'Best thresholds: {best_thresholds}')
+        print(f'Epsilon differences: {best_epsilons}')
+        self.best_objective_value = best_objective_value
+        return best_thresholds, best_epsilons
     
-    def plot_2d_roc(self):
-        """
-        This method plots the ROC curve for each class.
-        It also plots the diagonal line, which corresponds to a random classifier.
-        """
-        plt.figure(figsize=(8, 6))
-
-        plt.plot(self.fpr1_, self.tpr1_, color='blue', label=f'Class 1 ROC (area = {self.roc_auc1_:.2f})')
-        plt.plot(self.fpr2_, self.tpr2_, color='orange', label=f'Class 2 ROC (area = {self.roc_auc2_:.2f})')
-
-        plt.xlabel('False Positive Rate')
-        plt.ylabel('True Positive Rate')
-        plt.title('2D ROC Curve')
-        plt.legend(loc='lower right')
-
-        plt.plot([0, 1], [0, 1], color='grey', linestyle='--')
-
-        plt.xlim([0.0, 1.0])
-        plt.ylim([0.0, 1.05])
-
-        plt.show()
-
-    def plot_performance_comparison(self, X_test, y_test, A_test):
-        """
-        Plot performance metrics comparison between original and adjusted thresholds.
-        
-        Note:
-        Assumes calibration i.e. a default threshold of 0.5 for the original predictions.
-        """
-        y_prob = self.base_model.predict_proba(X_test)[:, 1]
-        original_predictions = np.where(y_prob > 0.5, 1, 0)
-
-        original_accuracy = accuracy_score(y_test, original_predictions)
-        original_f1 = f1_score(y_test, original_predictions)
-        original_precision = precision_score(y_test, original_predictions)
-        original_recall = recall_score(y_test, original_predictions)
-        adjusted_labels = self.predict(X_test, A_test)
-
-        adjusted_accuracy = accuracy_score(y_test, adjusted_labels)
-        adjusted_f1 = f1_score(y_test, adjusted_labels)
-        adjusted_precision = precision_score(y_test, adjusted_labels)
-        adjusted_recall = recall_score(y_test, adjusted_labels)
-
-        metrics = ['Accuracy', 'F1 Score', 'Precision', 'Recall']
-        original_values = [original_accuracy, original_f1, original_precision, original_recall]
-        adjusted_values = [adjusted_accuracy, adjusted_f1, adjusted_precision, adjusted_recall]
-
-        fig = go.Figure(data=[
-            go.Bar(name='Original', x=metrics, y=original_values),
-            go.Bar(name='Adjusted', x=metrics, y=adjusted_values)
-        ])
-
-        fig.update_layout(barmode='group', title='Performance Comparison: Original vs. Adjusted Thresholds',
-                        yaxis=dict(title='Score', range=[0, 1.05]),
-                        xaxis=dict(title='Metrics'))
-        fig.show()
