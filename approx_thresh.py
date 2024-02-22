@@ -72,66 +72,95 @@ class ApproxThreshold(BaseEstimator, ClassifierMixin):
         return metrics
 
     def _compute_all_thresholds_per_group(self, y_prob, unique_groups, A):
+        """
+        Convenience function to compute all possible threshold combinations
+        
+        :param y_prob: predicted probabilities
+        :param unique_groups: unique group labels
+        :param A: group labels
+
+        :return: all possible threshold combinations
+        """
         group_thresholds = {}
         for group in unique_groups:
             mask_group = A == group
             group_thresholds[group] = np.unique(y_prob[mask_group])
         return np.array(np.meshgrid(*group_thresholds.values())).T.reshape(-1, len(unique_groups))
-
+    
     def _objective_function(self, 
-                            threshold_combination, 
-                            y_true, 
-                            y_prob, 
-                            A, 
-                            unique_groups, 
-                            metrics_functions, 
-                            lambda_):
-        combined_preds = []
-        combined_true = []
+                            tau,  # threshold_combination 
+                            Y,  # y_true
+                            Y_hat,  # y_prob
+                            groups,  # A
+                            unique_groups,
+                            metric_functions,  # g_i
+                            lambda_val,
+                            gamma_map = None,
+                            diff_strategy = 'euclidean'):  # lambda
+        
+        if gamma_map is None:
+            gamma_map = {metric_name: 1.0 / len(metric_functions) for metric_name in metric_functions.keys()}
+
+        combined_Y_hat_adjusted = []
+        combined_Y_true = []
         objective = 0
-        temp_group_metrics = {}
+        group_metrics = {}
         total_size = 0
-        weighted_acc = 0
+        global_performance_weighted = 0
         max_epsilon_violation = False
+        temp_epsilons = {} 
 
         for i, group in enumerate(unique_groups):
-            mask_group = A == group
-            temp_group_metrics[group] = self._compute_metrics(y_true[mask_group], y_prob[mask_group], threshold_combination[i])
+            mask_group = groups == group
+            group_Y = Y[mask_group]
+            group_Y_hat = Y_hat[mask_group]
+            tau_group = tau[i]
+            
+            group_metrics[group] = self._compute_metrics(group_Y, group_Y_hat, tau_group)
+            
+            Y_hat_adjusted = group_Y_hat > tau_group
+            combined_Y_hat_adjusted.extend(Y_hat_adjusted)
+            combined_Y_true.extend(group_Y)
 
-            adjusted_labels = y_prob[mask_group] > threshold_combination[i]
-            combined_preds.extend(adjusted_labels)
-            combined_true.extend(y_true[mask_group])
-
-            group_acc = self.global_metric(y_true[mask_group], y_prob[mask_group], threshold_combination[i])
-            group_size = len(y_true[mask_group])
-            weighted_acc += group_acc * group_size
+            # NOTE: This by default is weighting the global performance for each group by the group size
+            # BUT there's a world in which we might instead weight evenly
+            group_global_performance = self.global_metric(group_Y, group_Y_hat, tau_group)
+            group_size = len(group_Y)
+            global_performance_weighted += group_global_performance * group_size
             total_size += group_size
 
-        weighted_acc /= total_size
-
-        temp_epsilons = {}
+        global_performance_weighted /= total_size
+        
         for i, group in enumerate(unique_groups):
             temp_epsilons[group] = {}
-            group_metric_vector = np.array([temp_group_metrics[group][metric_name] for metric_name in metrics_functions.keys()])
+            group_metric_vector = np.array([group_metrics[group][metric_name] for metric_name in metric_functions.keys()])
 
             for other_group in unique_groups:
                 if group != other_group:
-                    other_group_metric_vector = np.array([temp_group_metrics[other_group][metric_name] for metric_name in metrics_functions.keys()])
-                    distances = cdist(group_metric_vector.reshape(1, -1), other_group_metric_vector.reshape(1, -1), metric='euclidean')
-                    objective += np.sum(distances)
+                    if diff_strategy == 'euclidean':
+                        other_group_metric_vector = np.array([group_metrics[other_group][metric_name] for metric_name in metric_functions.keys()])
+                        distances = cdist(group_metric_vector.reshape(1, -1), other_group_metric_vector.reshape(1, -1), metric='euclidean')
+                        objective += np.sum(distances)
+                        epsilon_diff = np.abs(group_metric_vector - other_group_metric_vector)
+                    else:
+                        epsilon_diff = []
+                        for metric_name in metric_functions.keys():
+                            diff = group_metrics[group][metric_name] - group_metrics[other_group][metric_name]
+                            objective += gamma_map[metric_name] * (diff ** 2)
+                            epsilon_diff.append(abs(diff))
 
-                    # Check for max epsilon violation
-                    epsilon_diff = np.abs(group_metric_vector - other_group_metric_vector)
-                    if np.any(epsilon_diff > self.max_epsilon):
-                        max_epsilon_violation = True
                     temp_epsilons[group][other_group] = epsilon_diff
+                    if any(diff > self.max_epsilon for diff in epsilon_diff):
+                        max_epsilon_violation = True
+        
+        A_choose_2 = len(unique_groups) * (len(unique_groups) - 1) / 2
+        objective = (1 - lambda_val) * (objective / A_choose_2) + lambda_val * (1 - global_performance_weighted)
 
-        objective += lambda_ * (1 - weighted_acc)
-
-        if self.resource_constraint is not None and sum(combined_preds) > self.resource_constraint:
+        if self.resource_constraint and sum(combined_Y_hat_adjusted) > self.resource_constraint:
             return np.inf, temp_epsilons, max_epsilon_violation
 
         return objective, temp_epsilons, max_epsilon_violation
+
 
 class ApproxThresholdBrute(ApproxThreshold):
     def __init__(self, metric_functions, lambda_=0.5, global_metric=f1, max_epsilon=1.0, max_error=0, max_total_combinations=1):
@@ -144,7 +173,6 @@ class ApproxThresholdBrute(ApproxThreshold):
         self.max_epsilon = max_epsilon
         self.best_objective_value = None
         self.y_prob = None
-
 
     def _find_intersection(self, 
                            y_true,
@@ -225,6 +253,17 @@ class ApproxThresholdNet(ApproxThreshold):
         self.max_total_combinations = max_total_combinations
 
     def evaluate_combination(self, threshold_combination, y_true, y_prob, A, unique_groups, metrics_functions, lambda_):
+        """
+        Convenience function to evaluate a threshold combination in parallel
+        
+        :param threshold_combination:
+        :param y_true:
+        :param y_prob:
+        :param A:
+        :param unique_groups:
+        :param metrics_functions:
+        :param lambda_:
+        """
         objective, temp_epsilons, max_epsilon_violation = self._objective_function(threshold_combination, 
                                                                                        y_true, 
                                                                                        y_prob, 
@@ -236,10 +275,21 @@ class ApproxThresholdNet(ApproxThreshold):
         return objective, threshold_combination, temp_epsilons, max_epsilon_violation
 
     def _find_intersection(self, y_true, y_prob, A, unique_groups, metrics_functions, lambda_=0.5):
+        """
+        Use an epsilon net to find the best threshold combination.
+        
+        :param y_true:
+        :param y_prob:
+        :param A:
+        :param unique_groups:
+        :param metrics_functions:
+        :param lambda_:
+        """
         binom_metric_funcs = len(metrics_functions) * (len(metrics_functions) - 1) / 2
 
         # NOTE: this is often theoretically 1/n, but we conservatively use 1/log(n)
-        lipschitz_constant_g_i = 2 * (1 / np.log(len(y_true)))
+        # lipschitz_constant_g_i = 2 * (1 / np.log(len(y_true)))
+        lipschitz_constant_g_i = 0.25 
 
         if self.L_f is None:
             self.L_f = lipschitz_constant_g_i * len(unique_groups) * binom_metric_funcs + lambda_
@@ -268,10 +318,8 @@ class ApproxThresholdNet(ApproxThreshold):
         objectives = {}
         epsilons = {}
 
-        # best_epsilons = {}
         combos = list(product(threshold_points, repeat=len(unique_groups)))
         with ProcessPoolExecutor(max_workers=MAX_WORKERS) as executor:
-            # , mp_context=mp.get_context('fork')
             print(executor._mp_context)
             print('Enters pool')
             future_to_combination = {executor.submit(self.evaluate_combination, tc, y_true, y_prob, A, unique_groups, metrics_functions, lambda_): tc for tc in combos}
